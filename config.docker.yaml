@@ -1,0 +1,31 @@
+# Committed config used inside the container. db_path is overridden by
+# POLYDRIFT_DB_PATH so it lands on the Railway volume.
+db_path: /data/polydrift.db
+
+poll:
+  interval_s: 300
+  backfill_on_first_seen: true
+
+universe:
+  min_liquidity_usd: 25000
+  max_markets: 40
+  scan_pages: 5
+  require_end_date_future: true
+  max_days_to_resolution: 400
+  price_band: [0.05, 0.95]
+  exclude_question_patterns:
+    - "(?i)jesus christ"
+    - "(?i)second coming"
+
+kalshi:
+  enabled: true
+  max_markets: 400
+  scan_pages: 5
+  max_days_to_resolution: 400
+  series_allowlist: []
+
+http:
+  timeout_s: 20
+  max_retries: 4
+  backoff_base_s: 1.0
+  user_agent: "polydrift/0.1 (read-only research harness)"
