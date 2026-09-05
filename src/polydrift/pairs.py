@@ -259,6 +259,8 @@ def refresh_pairs(
             else:
                 counts[final] += 1
 
+    applied = apply_decisions(storage, load_decisions(cfg.get("pairs", {}).get("decisions_file")), now_ts)
+    counts["decisions_applied"] = applied["approved"] + applied["rejected"]
     storage.set_meta("pairs_last_refresh_ts", str(now_ts))
     log.info("pairs refresh: %s", counts)
     return counts
@@ -268,3 +270,71 @@ def refresh_due(storage: Storage, cfg: Mapping[str, Any], now_ts: int) -> bool:
     interval = int(cfg.get("pairs", {}).get("refresh_interval_s", 6 * 3600))
     last = storage.get_meta("pairs_last_refresh_ts")
     return last is None or now_ts - int(last) >= interval
+
+
+def load_decisions(path: str | None) -> dict[str, list[dict[str, Any]]]:
+    import os
+    import yaml
+    candidate = path or os.environ.get("POLYDRIFT_DECISIONS", "decisions.yaml")
+    try:
+        with open(candidate) as fh:
+            data = yaml.safe_load(fh) or {}
+    except FileNotFoundError:
+        return {"approve": [], "reject": []}
+    if not isinstance(data, dict):
+        raise ValueError(f"{candidate}: top level must be a mapping")
+    out = {"approve": list(data.get("approve") or []), "reject": list(data.get("reject") or [])}
+    for key in ("approve", "reject"):
+        for d in out[key]:
+            cid = d.get("condition_id")
+            if cid is not None and not isinstance(cid, str):
+                # PyYAML is YAML 1.1: an unquoted 0x... scans as a hex INTEGER and
+                # the id silently becomes a decimal that matches nothing.
+                raise ValueError(
+                    f"{candidate}: condition_id for {d.get('ticker')} must be a quoted string "
+                    f"(got {type(cid).__name__}); write condition_id: \"0x...\"")
+    return out
+
+
+def apply_decisions(storage: Storage, decisions: Mapping[str, Sequence[Mapping[str, Any]]],
+                    now_ts: int) -> dict[str, int]:
+    """Apply version-controlled human decisions to the registry. Idempotent.
+
+    A decision names a Kalshi ticker, optionally pinned to a condition_id.
+    APPROVE fails closed: if the ticker matched more than one Polymarket market
+    and no condition_id is given, nothing is approved and it is counted as
+    ambiguous. Live catch 2026-09-05: each World Chess Championship leg matched
+    BOTH players' Polymarket markets; approving by ticker blessed the cross
+    pairs (Gukesh's leg <-> Sindarov's market), which are wrong bets.
+    REJECT applies to every matching pair — rejecting more is the safe side.
+    """
+    counts = {"approved": 0, "rejected": 0, "unmatched": 0, "ambiguous": 0}
+    for status, key in (("approved", "approve"), ("rejected", "reject")):
+        for d in decisions.get(key, []) or []:
+            ticker = str(d.get("ticker", "")).strip()
+            if not ticker:
+                continue
+            cond = str(d["condition_id"]) if d.get("condition_id") else None
+            where, args = "ticker=?", [ticker]
+            if cond:
+                where += " AND condition_id=?"
+                args.append(cond)
+            matches = storage.conn.execute(
+                f"SELECT id, condition_id, status FROM kalshi_pairs WHERE {where}", args).fetchall()
+            if not matches:
+                counts["unmatched"] += 1
+                continue
+            if status == "approved" and len(matches) > 1:
+                counts["ambiguous"] += 1
+                log.warning("decision for %s is ambiguous (%d pairs); pin a condition_id: %s",
+                            ticker, len(matches), [m["condition_id"][:12] for m in matches])
+                continue
+            for m in matches:
+                if m["status"] != status:
+                    storage.conn.execute(
+                        "UPDATE kalshi_pairs SET status=?, updated_ts=? WHERE id=?",
+                        (status, now_ts, m["id"]))
+                    counts[status] += 1
+    if any(counts[k] for k in ("approved", "rejected", "ambiguous")):
+        log.info("decisions applied: %s", counts)
+    return counts

@@ -41,6 +41,7 @@ DEFAULTS: dict[str, Any] = {
         "close_date_tolerance_days": 45,
         "max_candidates_per_market": 3,
         "refresh_interval_s": 6 * 3600,
+        "decisions_file": None,          # default: ./decisions.yaml or $POLYDRIFT_DECISIONS
     },
     "divergence": {
         "signal_threshold_pts": 0.03,      # |kalshi - poly| must clear this

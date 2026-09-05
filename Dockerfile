@@ -11,7 +11,7 @@ COPY pyproject.toml README.md ./
 COPY src ./src
 RUN pip install --no-cache-dir .
 
-COPY config.docker.yaml ./config.docker.yaml
+COPY config.docker.yaml decisions.yaml ./
 
 # NOTE: no Dockerfile VOLUME directive — Railway rejects it ("docker VOLUME
 # ... is not supported, use Railway Volumes") and the build fails. Persistence

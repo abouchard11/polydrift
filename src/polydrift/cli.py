@@ -53,6 +53,16 @@ def _cmd_pairs(args, cfg, storage: Storage, http: Http) -> None:
             ok = storage.set_pair_status(pid, status, now_ts)
             print(f"pair {pid}: {'-> ' + status if ok else 'NOT FOUND'}")
 
+    if args.export_decisions:
+        import yaml
+        out = {"approve": [], "reject": []}
+        for r in storage.list_pairs(("approved", "rejected")):
+            out["approve" if r["status"] == "approved" else "reject"].append(
+                {"ticker": r["ticker"], "condition_id": r["condition_id"],
+                 "reason": f"{r['question'][:60]} <> {r['k_title'][:40]} / {r['yes_sub_title']}"})
+        print(yaml.safe_dump(out, sort_keys=False, allow_unicode=True))
+        return
+
     if args.show is not None:
         r = storage.get_pair(args.show)
         if r is None:
@@ -139,6 +149,8 @@ def main(argv: list[str] | None = None) -> int:
     p_pairs.add_argument("--reject", type=int, metavar="ID")
     p_pairs.add_argument("--unapprove", type=int, metavar="ID", help="send a decided pair back to review")
     p_pairs.add_argument("--all", action="store_true", help="include rejected pairs in the listing")
+    p_pairs.add_argument("--export-decisions", action="store_true",
+                         help="print current approved/rejected pairs in decisions.yaml shape")
 
     p_rep = sub.add_parser("report", help="does divergence predict convergence, net of fees?")
     p_rep.add_argument("--horizon", type=int, action="append", metavar="SECONDS",

@@ -195,3 +195,86 @@ def test_win_vs_qualify_blocks_auto_ok_in_the_registry(tmp_path):
     assert pair["wording_conflict"] == 1 and pair["status"] == "needs_review"
     assert "partial" in pair["wording_note"]
     st.close()
+
+
+def test_decisions_file_applies_and_is_idempotent(tmp_path):
+    from polydrift.pairs import apply_decisions, load_decisions
+    st = Storage(tmp_path / "t.db")
+    fetch = _seed(st,
+          poly_q="Will Spain win the UEFA EURO 2028?", poly_rules="", poly_end="2028-07-15T00:00:00Z",
+          k_ticker="KXUEFAEURO-28-ESP", k_title="Euro 2028 champion?",
+          k_sub="Spain", k_rules="", k_close="2028-08-15T00:00:00Z")
+    from polydrift.config import deep_merge
+    isolated = deep_merge(DEFAULTS, {"pairs": {"decisions_file": str(tmp_path / "none.yaml")}})
+    refresh_pairs(st, isolated, now_ts=2000, fetch_event_markets=fetch)
+    assert st.list_pairs()[0]["status"] == "needs_review"      # score 0.50: needs a human
+
+    dec_path = tmp_path / "decisions.yaml"
+    dec_path.write_text("approve:\n  - ticker: KXUEFAEURO-28-ESP\n    reason: same bet\n"
+                        "reject:\n  - ticker: KXNOPE-1\n    reason: not in registry\n")
+    dec = load_decisions(str(dec_path))
+    counts = apply_decisions(st, dec, now_ts=3000)
+    assert counts == {"approved": 1, "rejected": 0, "unmatched": 1, "ambiguous": 0}
+    assert st.usable_pairs()[0]["ticker"] == "KXUEFAEURO-28-ESP"
+    assert apply_decisions(st, dec, now_ts=4000) == {"approved": 0, "rejected": 0, "unmatched": 1, "ambiguous": 0}
+    st.close()
+
+
+def test_decisions_are_reapplied_on_refresh(tmp_path, monkeypatch):
+    """Decisions ship with the code. A fresh volume + a refresh must land them
+    without anyone typing --approve."""
+    from polydrift.config import deep_merge
+    st = Storage(tmp_path / "t.db")
+    fetch = _seed(st,
+          poly_q="Will Spain win the UEFA EURO 2028?", poly_rules="", poly_end="2028-07-15T00:00:00Z",
+          k_ticker="KXUEFAEURO-28-ESP", k_title="Will Spain win the 2028 UEFA Euros?",
+          k_sub="Spain", k_rules="", k_close="2028-08-15T00:00:00Z")
+    dec_path = tmp_path / "d.yaml"
+    dec_path.write_text("approve:\n  - ticker: KXUEFAEURO-28-ESP\n")
+    cfg = deep_merge(DEFAULTS, {"pairs": {"decisions_file": str(dec_path)}})
+    counts = refresh_pairs(st, cfg, now_ts=2000, fetch_event_markets=fetch)
+    assert counts["decisions_applied"] == 1
+    assert st.list_pairs()[0]["status"] == "approved"
+    st.close()
+
+
+def test_missing_decisions_file_is_not_an_error(tmp_path):
+    from polydrift.pairs import load_decisions
+    assert load_decisions(str(tmp_path / "nope.yaml")) == {"approve": [], "reject": []}
+
+
+def test_ambiguous_approve_fails_closed(tmp_path):
+    """REGRESSION 2026-09-05: a Kalshi leg that matched two Polymarket markets
+    was approved by ticker, blessing the cross pair (a wrong bet)."""
+    from polydrift.pairs import apply_decisions
+    st = Storage(tmp_path / "t.db")
+    for cid, q in (("cA", "Will Gukesh win the 2026 World Chess Championship?"),
+                   ("cB", "Will Sindarov win the 2026 World Chess Championship?")):
+        st.upsert_poly_markets([PolyMarket(condition_id=cid, gamma_id="1", question=q, slug="s",
+            description="", end_date="2027-01-01T00:00:00Z", yes_token_id="t", no_token_id="n",
+            active=True, closed=False)], 1)
+    st.upsert_kalshi_markets([KalshiMarket(ticker="KXCHESS-GDOM", event_ticker="E", series_ticker="S",
+        title="World Chess Champion", yes_sub_title="Gukesh", rules_primary="", rules_secondary="",
+        close_time="2028-12-30T00:00:00Z", market_type="binary", status="active")], 1)
+    for cid, sc in (("cA", 0.55), ("cB", 0.31)):
+        st.upsert_pair(cid, "KXCHESS-GDOM", score=sc, dates_ok=False, days_apart=700,
+                       wording_conflict=False, wording_note="", proposed_status="needs_review", now_ts=1)
+    counts = apply_decisions(st, {"approve": [{"ticker": "KXCHESS-GDOM"}]}, 2)
+    assert counts["ambiguous"] == 1 and counts["approved"] == 0
+    assert st.usable_pairs() == []
+    counts = apply_decisions(st, {"approve": [{"ticker": "KXCHESS-GDOM", "condition_id": "cA"}]}, 3)
+    assert counts["approved"] == 1
+    assert [(r["condition_id"], r["status"]) for r in st.list_pairs()] == [("cA", "approved"), ("cB", "needs_review")]
+    st.close()
+
+
+def test_unquoted_hex_condition_id_is_rejected_loudly(tmp_path):
+    """PyYAML (YAML 1.1) scans 0x... as an int. Silent mismatch otherwise."""
+    import pytest
+    from polydrift.pairs import load_decisions
+    f = tmp_path / "d.yaml"
+    f.write_text("approve:\n  - ticker: T\n    condition_id: 0xb8b5ba72\n")
+    with pytest.raises(ValueError, match="quoted string"):
+        load_decisions(str(f))
+    f.write_text("approve:\n  - ticker: T\n    condition_id: \"0xb8b5ba72\"\n")
+    assert load_decisions(str(f))["approve"][0]["condition_id"] == "0xb8b5ba72"

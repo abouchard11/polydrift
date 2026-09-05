@@ -8,7 +8,7 @@ from typing import Any, Mapping
 
 from .http import Http
 from .kalshi import KalshiClient
-from .pairs import refresh_due, refresh_pairs
+from .pairs import apply_decisions, load_decisions, refresh_due, refresh_pairs
 from .polymarket import PolymarketClient
 from .storage import Storage
 from .universe import select_poly_universe
@@ -97,6 +97,11 @@ def poll_once(cfg: Mapping[str, Any], storage: Storage, http: Http) -> PollResul
                 log.info("kalshi: indexed %d open events", n_events)
                 pairs_counts = refresh_pairs(storage, cfg, now_ts,
                                              fetch_event_markets=kalshi.event_markets)
+
+            # Version-controlled decisions land on every cycle, not just on the
+            # 6-hourly sweep, so a deploy that ships a new decisions.yaml takes
+            # effect within minutes. Idempotent and cheap.
+            apply_decisions(storage, load_decisions(cfg.get("pairs", {}).get("decisions_file")), now_ts)
 
             tickers = storage.pair_tickers()
             markets, snaps = [], []

@@ -1,0 +1,59 @@
+# Human decisions on cross-venue pairs, applied after every matcher refresh.
+# Version-controlled on purpose: they survive a volume wipe, ship with a deploy,
+# and every reversal is a diff someone can read. `polydrift pairs --approve/--reject`
+# still works for ad-hoc calls; `pairs --export-decisions` dumps them into this shape.
+#
+# Keyed by Kalshi ticker. Add condition_id to pin a specific Polymarket market
+# when one Kalshi leg could plausibly match more than one.
+
+approve:
+  # Reviewed 2026-09-05. Same resolution on both venues: "who wins X".
+  - ticker: KXUEFAEURO-28-ESP
+    reason: winner of Euro 2028; identical criteria
+  - ticker: KXUEFAEURO-28-FRA
+    reason: winner of Euro 2028; identical criteria
+  - ticker: KXUEFAEURO-28-ENG
+    reason: winner of Euro 2028; identical criteria
+  - ticker: KXUEFAEURO-28-POR
+    reason: winner of Euro 2028; identical criteria
+  - ticker: KXUEFAEURO-28-GER
+    reason: winner of Euro 2028; identical criteria
+  - ticker: KXPREMIERLEAGUE-27-MUN
+    reason: 2026-27 EPL champion; identical criteria
+  # Pinned: each chess leg also matched the OTHER player's Polymarket market.
+  - ticker: KXCHESSWORLDCHAMPION-CHESS26-GDOM
+    condition_id: "0xb8b5ba728577c752f2147f8a15a1710b39c70bafe5fa9536159725c7f09779c4"
+    reason: 2026 World Chess Championship winner (Gukesh); Kalshi close_time is a placeholder
+  - ticker: KXCHESSWORLDCHAMPION-CHESS26-JSIN
+    condition_id: "0xf35f7e818e58b63a996f909956b0ea1ad5c6517653cb4e67ce735e3666443920"
+    reason: 2026 World Chess Championship winner (Sindarov); Kalshi close_time is a placeholder
+  - ticker: KXUCL-27-RMA
+    reason: 2026-27 Champions League winner; identical criteria
+  - ticker: KXUCL-27-BAR
+    reason: 2026-27 Champions League winner; identical criteria
+
+reject:
+  # Reviewed 2026-09-05.
+  - ticker: KXBALANCEPOWERCOMBO-27FEB-RR
+    reason: >-
+      Polymarket resolves on who WINS control in the Nov 2026 election; Kalshi on
+      who HOLDS control in Feb 2027. Forks on contested results, deaths, party
+      switches, Senate ties. Correlated, not identical — divergence may be rational.
+  - ticker: KXBALANCEPOWERCOMBO-27FEB-DD
+    reason: same as RR — election outcome vs Feb 2027 control
+  - ticker: KXBALANCEPOWERCOMBO-27FEB-DR
+    reason: mismatched party combination
+  - ticker: KXBALANCEPOWERCOMBO-27FEB-RD
+    reason: mismatched party combination
+  - ticker: KXUSAIRANAGREEMENT-27-26JUL
+    reason: Kalshi horizon Jul 1 2026 vs Polymarket Dec 31 2026; Kalshi date already past
+  - ticker: KXUSAIRANAGREEMENT-27-26AUG
+    reason: Kalshi horizon Aug 1 2026 vs Polymarket Dec 31 2026; already past
+  - ticker: KXUSAIRANAGREEMENT-27-26SEP
+    reason: Kalshi horizon Sep 1 2026 vs Polymarket Dec 31 2026; already past
+  - ticker: KXIRANEMBASSY-27
+    reason: reopening an embassy is not invading
+  - ticker: KXF1-26-LN
+    reason: wrong driver (Norris vs Antonelli)
+  - ticker: KXF1-26-MV
+    reason: wrong driver (Verstappen vs Antonelli)
