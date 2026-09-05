@@ -13,8 +13,9 @@ RUN pip install --no-cache-dir .
 
 COPY config.docker.yaml ./config.docker.yaml
 
-# Railway mounts the persistent volume here. Without a volume the DB is
-# ephemeral and every redeploy silently restarts the measurement clock.
-VOLUME ["/data"]
+# NOTE: no Dockerfile VOLUME directive — Railway rejects it ("docker VOLUME
+# ... is not supported, use Railway Volumes") and the build fails. Persistence
+# comes from the Railway volume attached to this service at /data. Without that
+# volume the DB is ephemeral and every redeploy silently restarts the clock.
 
 CMD ["polydrift", "poll", "--loop"]
