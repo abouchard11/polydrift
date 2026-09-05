@@ -15,3 +15,4 @@ config.yaml
 .env.*
 .DS_Store
 data/
+_to_delete/
