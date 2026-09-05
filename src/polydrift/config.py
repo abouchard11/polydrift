@@ -38,6 +38,7 @@ DEFAULTS: dict[str, Any] = {
         "timeout_s": 20,
         "max_retries": 4,
         "backoff_base_s": 1.0,
+        "min_interval_s": 0.35,
         # Polymarket's CLOB sits behind Cloudflare and returns 403 to the
         # default Python-urllib/requests agent. Verified 2026-09-04. Do not
         # remove this default.
