@@ -8,7 +8,10 @@ import logging
 import sys
 
 from .config import load_config
+from .divergence import evaluate
 from .http import Http
+from .kalshi import KalshiClient
+from .pairs import refresh_pairs
 from .runner import poll_loop, poll_once
 from .storage import Storage
 
@@ -27,6 +30,94 @@ def _fmt_ts(ts: int | None) -> str:
     return dt.datetime.fromtimestamp(ts, dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
 
 
+def _wrap(text: str, width: int = 88, indent: str = "      ") -> str:
+    import textwrap
+    return "\n".join(textwrap.wrap(text or "(no rules text)", width=width,
+                                    initial_indent=indent, subsequent_indent=indent))
+
+
+def _cmd_pairs(args, cfg, storage: Storage, http: Http) -> None:
+    now_ts = int(dt.datetime.now(dt.timezone.utc).timestamp())
+
+    if args.refresh:
+        kalshi = KalshiClient(http)
+        n_events = storage.upsert_kalshi_events(
+            kalshi.iter_events(max_pages=int(cfg["kalshi"].get("event_scan_pages", 60))), now_ts)
+        counts = refresh_pairs(storage, cfg, now_ts, fetch_event_markets=kalshi.event_markets)
+        print(f"refresh: indexed {n_events} events;", json.dumps(counts))
+
+    for flag, status in (("approve", "approved"), ("reject", "rejected"),
+                         ("unapprove", "needs_review")):
+        pid = getattr(args, flag)
+        if pid is not None:
+            ok = storage.set_pair_status(pid, status, now_ts)
+            print(f"pair {pid}: {'-> ' + status if ok else 'NOT FOUND'}")
+
+    if args.show is not None:
+        r = storage.get_pair(args.show)
+        if r is None:
+            print(f"pair {args.show}: NOT FOUND")
+            return
+        flag = "  !! WORDING CONFLICT: " + r["wording_note"] if r["wording_conflict"] else ""
+        days = "unknown" if r["days_apart"] is None else f"{r['days_apart']}d apart"
+        print(f"pair {r['id']}  status={r['status']}  score={r['score']:.2f}  "
+              f"dates_ok={bool(r['dates_ok'])} ({days}){flag}")
+        if r["days_apart"] is not None and r["days_apart"] > 365:
+            print("  note: Kalshi close_time this far out is usually an early-close placeholder, "
+                  "not the resolution date — judge the pair on the rules text.")
+        print(f"\n  POLYMARKET  {r['question']}\n    ends {r['end_date']}")
+        print(_wrap(r["poly_rules"]))
+        print(f"\n  KALSHI      {r['k_title']}  /  {r['yes_sub_title']}  [{r['ticker']}]\n    closes {r['close_time']}")
+        print(_wrap(r["rules_primary"]))
+        if r["rules_secondary"]:
+            print(_wrap(r["rules_secondary"]))
+        print("\n  Read both. Same bet? -> `pairs --approve", r["id"], "`   Different bet? -> `pairs --reject", r["id"], "`")
+        return
+
+    statuses = None if args.all else ("auto_ok", "approved", "needs_review")
+    rows = storage.list_pairs(statuses)
+    if not rows:
+        print("no pairs yet — run `pairs --refresh` after at least one poll cycle")
+        return
+    print(f"  {'id':>4}  {'status':12} {'score':>5}  {'dates':5}  conflict  polymarket -> kalshi")
+    for r in rows:
+        print(f"  {r['id']:>4}  {r['status']:12} {r['score']:>5.2f}  "
+              f"{'ok' if r['dates_ok'] else 'NO':5}  {'YES' if r['wording_conflict'] else '-':8}  "
+              f"{r['question'][:44]:44} -> {(r['k_title'] or '')[:30]} / {(r['yes_sub_title'] or '')[:18]}")
+    print(f"\n  usable={sum(1 for r in rows if r['status'] in ('auto_ok', 'approved'))}  "
+          f"needs_review={sum(1 for r in rows if r['status'] == 'needs_review')}   "
+          f"`pairs --show ID` to review one")
+
+
+def _fmt(v, pct=False) -> str:
+    if v is None:
+        return "    -  "
+    return f"{v * 100:6.1f}%" if pct else f"{v * 100:+6.2f}"
+
+
+def _cmd_report(args, cfg, storage: Storage) -> None:
+    horizons = args.horizon or cfg.get("divergence", {}).get("horizons_s", [3600])
+    st = storage.status()
+    span = st.get("poly_span") or (None, None)
+    print(f"recorded span   {_fmt_ts(span[0])} -> {_fmt_ts(span[1])}")
+    print(f"usable pairs    {st['pairs_usable']}   (needs_review: {st['pairs_review']})")
+    print(f"fee assumption  taker, general rate {cfg['divergence']['fee_rate']}, round trip; "
+          f"signal threshold {cfg['divergence']['signal_threshold_pts'] * 100:.0f} pts")
+    print()
+    print("  units: probability points per contract.  net = gross - fees.  "
+          "t-stat < 2 means 'could easily be zero'.")
+    for h in horizons:
+        r = evaluate(storage, cfg, horizon_s=int(h))
+        print(f"\n  horizon {int(h) // 3600}h   pairs={r.pairs_evaluated}  timestamps={r.timestamps_evaluated}")
+        print(f"    {'provider':22} {'n':>5}  {'hit':>7}  {'gross':>7}  {'net':>7}  {'|div|':>7}  {'t':>5}")
+        for name, b in r.providers.items():
+            t = f"{b.t_stat:5.1f}" if b.t_stat is not None else "    -"
+            print(f"    {name:22} {b.n:>5}  {_fmt(b.hit_rate, pct=True)}  {_fmt(b.mean_gross)}  "
+                  f"{_fmt(b.mean_net)}  {_fmt(b.mean_abs_div)}  {t}")
+    print("\n  A provider is only interesting if its net beats BOTH baselines with t >= 2 "
+          "on a horizon you could actually trade.")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="polydrift", description=__doc__)
     parser.add_argument("-c", "--config", default=None, help="path to config.yaml")
@@ -40,6 +131,18 @@ def main(argv: list[str] | None = None) -> int:
 
     p_list = sub.add_parser("list-markets", help="show the current selected universe")
     p_list.add_argument("--limit", type=int, default=25)
+
+    p_pairs = sub.add_parser("pairs", help="cross-venue pair registry and review gate")
+    p_pairs.add_argument("--refresh", action="store_true", help="re-run the matcher now")
+    p_pairs.add_argument("--show", type=int, metavar="ID", help="print both venues' rules side by side")
+    p_pairs.add_argument("--approve", type=int, metavar="ID")
+    p_pairs.add_argument("--reject", type=int, metavar="ID")
+    p_pairs.add_argument("--unapprove", type=int, metavar="ID", help="send a decided pair back to review")
+    p_pairs.add_argument("--all", action="store_true", help="include rejected pairs in the listing")
+
+    p_rep = sub.add_parser("report", help="does divergence predict convergence, net of fees?")
+    p_rep.add_argument("--horizon", type=int, action="append", metavar="SECONDS",
+                       help="evaluate this horizon (repeatable); default from config")
 
     args = parser.parse_args(argv)
     _setup_logging(args.verbose)
@@ -71,6 +174,12 @@ def main(argv: list[str] | None = None) -> int:
             if st.get("last_run_error"):
                 print(f"last error         {st['last_run_error']}")
             print(f"recorded span      {_fmt_ts(span[0])} -> {_fmt_ts(span[1])}")
+
+        elif args.command == "pairs":
+            _cmd_pairs(args, cfg, storage, http)
+
+        elif args.command == "report":
+            _cmd_report(args, cfg, storage)
 
         elif args.command == "list-markets":
             rows = storage.conn.execute(

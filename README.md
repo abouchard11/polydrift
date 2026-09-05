@@ -25,7 +25,29 @@ polydrift poll                          # one cycle
 polydrift status                        # what's been recorded
 polydrift list-markets                  # current universe
 polydrift poll --loop                   # run continuously
+polydrift pairs --refresh               # sweep Kalshi's event index, re-match
+polydrift pairs                         # registry: auto_ok / needs_review
+polydrift pairs --show 41               # both venues' rules side by side
+polydrift pairs --approve 41            # same bet -> usable
+polydrift pairs --reject 31             # different bet -> never snapshotted again
+polydrift report                        # divergence -> convergence, net of fees
 ```
+
+## The review gate
+
+A pair becomes usable only by auto-clearing (score >= 0.75, dates agree, no
+wording conflict) or by a human approving it after reading both rules texts.
+The conflict detectors are defence in depth, not a substitute for reading:
+
+- **official vs de facto** (rules text) — the Maduro/Venezuela trap: an 81-point
+  gap that was two different bets.
+- **win vs qualify/advance/runoff** (titles) — 7 of the first 87 live candidates.
+
+Human decisions survive a re-match. Rejected pairs stop being snapshotted.
+
+**Kalshi `close_time` is frequently a far-future placeholder** on early-close
+markets (a 2026 chess championship "closes" in Dec 2028). It is shown, but do
+not read a date mismatch as evidence the pair is wrong — read the rules.
 
 ## Field notes — things verified live on 2026-09-04
 
@@ -60,8 +82,11 @@ six markets all priced 0.0005–0.0075 — the dead legs of large multi-outcome
 election markets. Nothing converges from half a basis point, and fees dominate.
 Hence `universe.price_band`, default `[0.05, 0.95]`.
 
-**Kalshi lists markets resolving in 2045 and 2070.** They never converge inside
-a measurement window. Hence `kalshi.max_days_to_resolution`.
+**Kalshi has 13,000+ open events.** A recorder that pages the first few hundred
+sees under 2% of the catalog and misses every real cross-listing. The matcher
+sweeps the full event index (titles only, every 6h); the recorder then snapshots
+only Kalshi tickers that matched something, so recording cost scales with
+overlap, not with Kalshi's catalog.
 
 **SQLite WAL is not available on every filesystem.** Network/FUSE mounts and
 some container volumes raise `disk I/O error` on `PRAGMA journal_mode=WAL`,
@@ -88,6 +113,7 @@ wastes weeks instead of minutes.
 Built and verified end-to-end 2026-09-04: 25 offline tests passing, live poll
 cycle recording Polymarket + Kalshi, CLOB historical backfill working.
 
-Not yet built: the cross-venue pair matcher with its human review gate, the fee
-model, and the divergence/convergence report. Those can be built while data
-accumulates — recording cannot.
+Deployed to Railway 2026-09-05 with a persistent volume (persistence verified
+across restart and rebuild). Pair matcher, review gate, fee model, and
+divergence report built the same day. The report needs time to accumulate
+paired observations; it says so rather than inventing a number.

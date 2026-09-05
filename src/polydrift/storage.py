@@ -79,6 +79,37 @@ CREATE TABLE IF NOT EXISTS kalshi_snapshots (
 );
 CREATE INDEX IF NOT EXISTS ix_kalshi_snap_tk_ts ON kalshi_snapshots(ticker, ts);
 
+CREATE TABLE IF NOT EXISTS kalshi_events (
+    event_ticker  TEXT PRIMARY KEY,
+    series_ticker TEXT,
+    title         TEXT NOT NULL,
+    sub_title     TEXT,
+    category      TEXT,
+    first_seen_ts INTEGER NOT NULL,
+    last_seen_ts  INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS kalshi_pairs (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    condition_id     TEXT NOT NULL REFERENCES poly_markets(condition_id),
+    ticker           TEXT NOT NULL REFERENCES kalshi_markets(ticker),
+    score            REAL NOT NULL,
+    dates_ok         INTEGER NOT NULL,
+    days_apart       INTEGER,
+    wording_conflict INTEGER NOT NULL,
+    wording_note     TEXT,
+    status           TEXT NOT NULL,      -- auto_ok | needs_review | approved | rejected
+    created_ts       INTEGER NOT NULL,
+    updated_ts       INTEGER NOT NULL,
+    UNIQUE(condition_id, ticker)
+);
+CREATE INDEX IF NOT EXISTS ix_pairs_status ON kalshi_pairs(status);
+
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
+
 CREATE TABLE IF NOT EXISTS poll_runs (
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
     started_ts         INTEGER NOT NULL,
@@ -198,6 +229,8 @@ class Storage:
                     first_seen_ts, last_seen_ts)
                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(ticker) DO UPDATE SET
+                     series_ticker=CASE WHEN excluded.series_ticker != '' THEN excluded.series_ticker ELSE kalshi_markets.series_ticker END,
+                     event_ticker=CASE WHEN excluded.event_ticker != '' THEN excluded.event_ticker ELSE kalshi_markets.event_ticker END,
                      title=excluded.title, yes_sub_title=excluded.yes_sub_title,
                      rules_primary=excluded.rules_primary,
                      rules_secondary=excluded.rules_secondary,
@@ -223,6 +256,104 @@ class Storage:
             after = c.execute("SELECT COUNT(*) FROM kalshi_snapshots").fetchone()[0]
         return after - before
 
+    def upsert_kalshi_events(self, events: Iterable[dict], now_ts: int) -> int:
+        rows = [(str(e.get("event_ticker")), str(e.get("series_ticker") or ""),
+                 str(e.get("title") or ""), str(e.get("sub_title") or ""),
+                 str(e.get("category") or ""), now_ts, now_ts)
+                for e in events if e.get("event_ticker")]
+        if not rows:
+            return 0
+        with self.tx() as c:
+            c.executemany(
+                """INSERT INTO kalshi_events
+                   (event_ticker, series_ticker, title, sub_title, category, first_seen_ts, last_seen_ts)
+                   VALUES (?,?,?,?,?,?,?)
+                   ON CONFLICT(event_ticker) DO UPDATE SET
+                     series_ticker=excluded.series_ticker, title=excluded.title,
+                     sub_title=excluded.sub_title, category=excluded.category,
+                     last_seen_ts=excluded.last_seen_ts""",
+                rows,
+            )
+        return len(rows)
+
+    def pair_tickers(self, include_rejected: bool = False) -> list[str]:
+        """Kalshi tickers worth snapshotting every cycle: anything in the
+        registry that a human hasn't rejected."""
+        sql = "SELECT DISTINCT ticker FROM kalshi_pairs"
+        if not include_rejected:
+            sql += " WHERE status != 'rejected'"
+        return [r[0] for r in self.conn.execute(sql).fetchall()]
+
+    # ---------- pair registry ----------
+
+    def upsert_pair(self, condition_id: str, ticker: str, *, score: float, dates_ok: bool,
+                    days_apart: int | None, wording_conflict: bool, wording_note: str,
+                    proposed_status: str, now_ts: int) -> str:
+        """Insert or refresh a candidate. Human decisions (approved / rejected)
+        SURVIVE a refresh of the same pair — a re-match must never silently
+        flip a reviewed pair back. Returns the resulting status."""
+        row = self.conn.execute(
+            "SELECT status FROM kalshi_pairs WHERE condition_id=? AND ticker=?",
+            (condition_id, ticker),
+        ).fetchone()
+        if row and row["status"] in ("approved", "rejected"):
+            status = row["status"]
+        else:
+            status = proposed_status
+        self.conn.execute(
+            """INSERT INTO kalshi_pairs
+               (condition_id, ticker, score, dates_ok, days_apart, wording_conflict,
+                wording_note, status, created_ts, updated_ts)
+               VALUES (?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(condition_id, ticker) DO UPDATE SET
+                 score=excluded.score, dates_ok=excluded.dates_ok,
+                 days_apart=excluded.days_apart,
+                 wording_conflict=excluded.wording_conflict,
+                 wording_note=excluded.wording_note,
+                 status=?, updated_ts=excluded.updated_ts""",
+            (condition_id, ticker, score, int(dates_ok), days_apart, int(wording_conflict),
+             wording_note, status, now_ts, now_ts, status),
+        )
+        return status
+
+    def set_pair_status(self, pair_id: int, status: str, now_ts: int) -> bool:
+        cur = self.conn.execute(
+            "UPDATE kalshi_pairs SET status=?, updated_ts=? WHERE id=?",
+            (status, now_ts, pair_id),
+        )
+        return cur.rowcount == 1
+
+    def list_pairs(self, statuses: tuple[str, ...] | None = None) -> list[sqlite3.Row]:
+        sql = """SELECT p.*, m.question, m.description AS poly_rules, m.end_date,
+                        k.title AS k_title, k.yes_sub_title, k.rules_primary,
+                        k.rules_secondary, k.close_time
+                 FROM kalshi_pairs p
+                 JOIN poly_markets m ON m.condition_id = p.condition_id
+                 JOIN kalshi_markets k ON k.ticker = p.ticker"""
+        args: tuple = ()
+        if statuses:
+            sql += " WHERE p.status IN (%s)" % ",".join("?" * len(statuses))
+            args = statuses
+        sql += " ORDER BY p.status, p.score DESC"
+        return self.conn.execute(sql, args).fetchall()
+
+    def get_pair(self, pair_id: int) -> sqlite3.Row | None:
+        rows = [r for r in self.list_pairs() if r["id"] == pair_id]
+        return rows[0] if rows else None
+
+    def usable_pairs(self) -> list[sqlite3.Row]:
+        return self.list_pairs(("auto_ok", "approved"))
+
+    def get_meta(self, key: str) -> str | None:
+        row = self.conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        return row["value"] if row else None
+
+    def set_meta(self, key: str, value: str) -> None:
+        self.conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, value),
+        )
+
     # ---------- run bookkeeping / status ----------
 
     def start_run(self, now_ts: int) -> int:
@@ -244,8 +375,12 @@ class Storage:
             "db_path": str(self.db_path),
             "poly_markets": q("SELECT COUNT(*) FROM poly_markets").fetchone()[0],
             "poly_snapshots": q("SELECT COUNT(*) FROM poly_snapshots").fetchone()[0],
+            "kalshi_events": q("SELECT COUNT(*) FROM kalshi_events").fetchone()[0],
             "kalshi_markets": q("SELECT COUNT(*) FROM kalshi_markets").fetchone()[0],
             "kalshi_snapshots": q("SELECT COUNT(*) FROM kalshi_snapshots").fetchone()[0],
+            "pairs_total": q("SELECT COUNT(*) FROM kalshi_pairs").fetchone()[0],
+            "pairs_usable": q("SELECT COUNT(*) FROM kalshi_pairs WHERE status IN ('auto_ok','approved')").fetchone()[0],
+            "pairs_review": q("SELECT COUNT(*) FROM kalshi_pairs WHERE status='needs_review'").fetchone()[0],
             "runs_total": q("SELECT COUNT(*) FROM poll_runs").fetchone()[0],
             "runs_failed": q("SELECT COUNT(*) FROM poll_runs WHERE ok=0 AND finished_ts IS NOT NULL").fetchone()[0],
         }

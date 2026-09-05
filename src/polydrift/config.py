@@ -29,10 +29,26 @@ DEFAULTS: dict[str, Any] = {
     },
     "kalshi": {
         "enabled": True,
-        "max_markets": 400,
-        "scan_pages": 8,
+        "event_scan_pages": 120,       # 200 events/page; 8k+ open events on 2026-09-05
         "max_days_to_resolution": 400,
         "series_allowlist": [],
+    },
+    "pairs": {
+        "event_min_score": 0.25,
+        "max_events_per_market": 3,
+        "min_candidate_score": 0.30,
+        "auto_ok_score": 0.75,
+        "close_date_tolerance_days": 45,
+        "max_candidates_per_market": 3,
+        "refresh_interval_s": 6 * 3600,
+    },
+    "divergence": {
+        "signal_threshold_pts": 0.03,      # |kalshi - poly| must clear this
+        "horizons_s": [3600, 6 * 3600, 24 * 3600],
+        "max_stale_s": 1800,
+        "max_ahead_s": 1800,
+        "fee_rate": 0.05,                  # conservative general-category taker rate
+        "reversion_lookback_s": 6 * 3600,
     },
     "http": {
         "timeout_s": 20,

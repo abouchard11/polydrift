@@ -8,6 +8,7 @@ from typing import Any, Mapping
 
 from .http import Http
 from .kalshi import KalshiClient
+from .pairs import refresh_due, refresh_pairs
 from .polymarket import PolymarketClient
 from .storage import Storage
 from .universe import select_poly_universe
@@ -15,20 +16,8 @@ from .universe import select_poly_universe
 log = logging.getLogger(__name__)
 
 
-def _within_horizon(close_time: str | None, now: dt.datetime, max_days: Any) -> bool:
-    """Kalshi lists markets resolving in 2045/2050. Those never converge inside
-    a measurement window and would dominate a volume-ranked sample."""
-    if max_days is None or not close_time:
-        return True
-    try:
-        close = dt.datetime.fromisoformat(str(close_time).replace("Z", "+00:00"))
-    except ValueError:
-        return True
-    return (close - now).days <= int(max_days)
-
-
 class PollResult(dict):
-    """Plain dict with attribute-ish access for logging convenience."""
+    """Plain dict; exists so the type reads as 'a poll result' in logs."""
 
 
 def poll_once(cfg: Mapping[str, Any], storage: Storage, http: Http) -> PollResult:
@@ -38,13 +27,14 @@ def poll_once(cfg: Mapping[str, Any], storage: Storage, http: Http) -> PollResul
 
     poly_markets = poly_snaps = kalshi_markets = kalshi_snaps = 0
     backfilled = 0
+    pairs_counts: dict[str, int] | None = None
     error: str | None = None
 
     try:
         # ---- Polymarket ----
         poly = PolymarketClient(http)
         raw_by_condition: dict[str, dict[str, Any]] = {}
-        candidates: list[tuple[Any, float | None]] = []
+        candidates: list[tuple[Any, float | None, float | None]] = []
 
         uni_cfg = cfg.get("universe", {})
         floor = float(uni_cfg.get("min_liquidity_usd", 0) or 0)
@@ -91,29 +81,36 @@ def poll_once(cfg: Mapping[str, Any], storage: Storage, http: Http) -> PollResul
                     log.warning("backfill failed for %s: %s", market.condition_id, exc)
 
         # ---- Kalshi ----
+        # Two costs, deliberately separated:
+        #   (a) when due (default 6h): sweep the full open-event index (titles
+        #       only) and re-run the matcher. This is what discovers overlap.
+        #   (b) every cycle: a cheap batched price refresh for ONLY the tickers
+        #       already in the pair registry. Recording cost scales with the
+        #       overlap we care about, not with Kalshi's 8k-event catalog.
         if cfg.get("kalshi", {}).get("enabled", True):
             kalshi = KalshiClient(http)
-            limit = int(cfg["kalshi"].get("max_markets", 400))
-            k_max_days = cfg["kalshi"].get("max_days_to_resolution")
-            allowlist = cfg["kalshi"].get("series_allowlist", []) or []
+            if refresh_due(storage, cfg, now_ts):
+                n_events = storage.upsert_kalshi_events(
+                    kalshi.iter_events(max_pages=int(cfg["kalshi"].get("event_scan_pages", 60))),
+                    now_ts,
+                )
+                log.info("kalshi: indexed %d open events", n_events)
+                pairs_counts = refresh_pairs(storage, cfg, now_ts,
+                                             fetch_event_markets=kalshi.event_markets)
+
+            tickers = storage.pair_tickers()
             markets, snaps = [], []
-            for event, raw in kalshi.iter_event_markets(
-                max_pages=int(cfg["kalshi"].get("scan_pages", 8)),
-                series_allowlist=allowlist,
-            ):
-                market = kalshi.parse_market(event, raw)
+            for raw in kalshi.markets_by_tickers(tickers):
+                ev = {"event_ticker": raw.get("event_ticker", ""), "series_ticker": ""}
+                market = kalshi.parse_market(ev, raw)
                 snap = kalshi.parse_snapshot(raw, now_ts)
                 if market is None or snap is None:
                     continue
-                if not _within_horizon(market.close_time, now, k_max_days):
-                    continue
                 markets.append(market)
                 snaps.append(snap)
-                if len(markets) >= limit:
-                    break
-            kalshi_markets = storage.upsert_kalshi_markets(markets, now_ts)
+            kalshi_markets = storage.upsert_kalshi_markets(markets, now_ts) if markets else 0
             kalshi_snaps = storage.insert_kalshi_snapshots(snaps)
-            log.info("kalshi: %d markets, %d snapshots", kalshi_markets, kalshi_snaps)
+            log.info("kalshi: refreshed %d paired tickers, %d snapshots", len(tickers), kalshi_snaps)
 
     except Exception as exc:
         error = f"{type(exc).__name__}: {exc}"
@@ -128,7 +125,7 @@ def poll_once(cfg: Mapping[str, Any], storage: Storage, http: Http) -> PollResul
     return PollResult(
         run_id=run_id, poly_markets=poly_markets, poly_snapshots=poly_snaps,
         backfilled=backfilled, kalshi_markets=kalshi_markets,
-        kalshi_snapshots=kalshi_snaps, error=error,
+        kalshi_snapshots=kalshi_snaps, pairs=pairs_counts, error=error,
     )
 
 

@@ -82,6 +82,42 @@ class KalshiClient:
             if not cursor:
                 return
 
+    def iter_events(self, page_size: int = 200, max_pages: int = 60) -> Iterator[dict[str, Any]]:
+        """Titles-only sweep of the open-event index. Kalshi had 8,000+ open
+        events on 2026-09-05; nested markets on every page would be ~10x the
+        payload for no matching benefit. Legs are fetched per candidate event."""
+        cursor: str | None = None
+        for _ in range(max_pages):
+            params: dict[str, Any] = {"limit": page_size, "status": "open",
+                                      "with_nested_markets": "false"}
+            if cursor:
+                params["cursor"] = cursor
+            payload = self.http.get_json(f"{KALSHI_BASE}/events", params=params)
+            events = payload.get("events", []) if isinstance(payload, dict) else []
+            if not events:
+                return
+            for event in events:
+                yield event
+            cursor = payload.get("cursor") if isinstance(payload, dict) else None
+            if not cursor:
+                return
+
+    def event_markets(self, event_ticker: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        payload = self.http.get_json(f"{KALSHI_BASE}/events/{event_ticker}",
+                                     params={"with_nested_markets": "true"})
+        event = payload.get("event", payload) if isinstance(payload, dict) else {}
+        markets = [m for m in (event.get("markets") or []) if not is_combo(str(m.get("ticker", "")))]
+        return event, markets
+
+    def markets_by_tickers(self, tickers: Sequence[str], chunk: int = 50) -> Iterator[dict[str, Any]]:
+        """Cheap per-cycle price refresh for a known ticker set."""
+        tickers = [t for t in tickers if t]
+        for i in range(0, len(tickers), chunk):
+            payload = self.http.get_json(f"{KALSHI_BASE}/markets",
+                                         params={"tickers": ",".join(tickers[i:i + chunk])})
+            for m in (payload.get("markets", []) if isinstance(payload, dict) else []):
+                yield m
+
     @staticmethod
     def parse_market(event: dict[str, Any], raw: dict[str, Any]) -> KalshiMarket | None:
         ticker = raw.get("ticker")
