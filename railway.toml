@@ -1,6 +1,10 @@
 [build]
 builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
+# Deploy on any push EXCEPT test-only or docs-only commits. The positive "**"
+# is required: a negation-only list matches nothing and Railway marks every
+# deployment SKIPPED (learned the hard way, 2026-09-08).
+watchPatterns = ["**", "!/tests/**", "!**/*.md", "!/_to_delete/**"]
 
 [deploy]
 startCommand = "polydrift poll --loop"
