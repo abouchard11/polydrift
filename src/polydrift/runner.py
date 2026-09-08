@@ -94,7 +94,8 @@ def poll_once(cfg: Mapping[str, Any], storage: Storage, http: Http) -> PollResul
                     kalshi.iter_events(max_pages=int(cfg["kalshi"].get("event_scan_pages", 60))),
                     now_ts,
                 )
-                log.info("kalshi: indexed %d open events", n_events)
+                pruned = storage.prune_stale_events(now_ts)
+                log.info("kalshi: indexed %d open events, pruned %d stale", n_events, pruned)
                 pairs_counts = refresh_pairs(storage, cfg, now_ts,
                                              fetch_event_markets=kalshi.event_markets)
 
@@ -103,7 +104,8 @@ def poll_once(cfg: Mapping[str, Any], storage: Storage, http: Http) -> PollResul
             # effect within minutes. Idempotent and cheap.
             apply_decisions(storage, load_decisions(cfg.get("pairs", {}).get("decisions_file")), now_ts)
 
-            tickers = storage.pair_tickers()
+            tickers = storage.pair_tickers(
+                min_review_score=cfg["kalshi"].get("tracked_min_review_score", 0.5))
             markets, snaps = [], []
             for raw in kalshi.markets_by_tickers(tickers):
                 ev = {"event_ticker": raw.get("event_ticker", ""), "series_ticker": ""}

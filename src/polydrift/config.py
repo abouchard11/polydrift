@@ -29,13 +29,15 @@ DEFAULTS: dict[str, Any] = {
     },
     "kalshi": {
         "enabled": True,
-        "event_scan_pages": 120,       # 200 events/page; 8k+ open events on 2026-09-05
+        "event_scan_pages": 120,
+        "tracked_min_review_score": 0.5,   # needs_review pairs below this are not snapshotted       # 200 events/page; 8k+ open events on 2026-09-05
         "max_days_to_resolution": 400,
         "series_allowlist": [],
     },
     "pairs": {
         "event_min_score": 0.25,
         "max_events_per_market": 3,
+        "max_event_fetches_per_sweep": 150,
         "min_candidate_score": 0.30,
         "auto_ok_score": 0.75,
         "close_date_tolerance_days": 45,
@@ -55,7 +57,7 @@ DEFAULTS: dict[str, Any] = {
         "timeout_s": 20,
         "max_retries": 4,
         "backoff_base_s": 1.0,
-        "min_interval_s": 0.35,
+        "min_interval_s": 0.5,
         # Polymarket's CLOB sits behind Cloudflare and returns 403 to the
         # default Python-urllib/requests agent. Verified 2026-09-04. Do not
         # remove this default.

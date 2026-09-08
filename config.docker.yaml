@@ -20,9 +20,19 @@ kalshi:
   scan_pages: 5
   max_days_to_resolution: 400
   series_allowlist: []
+  tracked_min_review_score: 0.5
 http:
   timeout_s: 20
   max_retries: 4
   backoff_base_s: 1.0
   user_agent: polydrift/0.1 (read-only research harness)
-  min_interval_s: 0.35
+  min_interval_s: 0.5
+pairs:
+  event_min_score: 0.25
+  max_events_per_market: 3
+  min_candidate_score: 0.3
+  auto_ok_score: 0.75
+  close_date_tolerance_days: 45
+  max_candidates_per_market: 3
+  max_event_fetches_per_sweep: 150
+  refresh_interval_s: 21600

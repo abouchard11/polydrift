@@ -188,6 +188,7 @@ def refresh_pairs(
     tol_days = int(pcfg.get("close_date_tolerance_days", 45))
     per_market = int(pcfg.get("max_candidates_per_market", 3))
     events_per_market = int(pcfg.get("max_events_per_market", 3))
+    max_fetches = int(pcfg.get("max_event_fetches_per_sweep", 150))
 
     polys = storage.conn.execute(
         "SELECT condition_id, question, description, end_date FROM poly_markets"
@@ -196,9 +197,27 @@ def refresh_pairs(
         "SELECT event_ticker, series_ticker, title, sub_title FROM kalshi_events"
     ).fetchall()
 
-    counts = {"events_scanned": len(events), "events_fetched": 0, "candidates": 0,
-              "auto_ok": 0, "needs_review": 0, "kept_decision": 0}
+    counts = {"events_scanned": len(events), "events_fetched": 0, "fetch_capped": 0,
+              "candidates": 0, "auto_ok": 0, "needs_review": 0, "kept_decision": 0}
     fetched: dict[str, tuple[dict[str, Any], list[dict[str, Any]]]] = {}
+
+    # Pre-pass: rank every (market, event) candidate globally so the per-sweep
+    # fetch budget goes to the strongest matches, not to whichever Polymarket
+    # market happens to sort first. 453 fetches/sweep took 16 minutes and
+    # left a gap in the Polymarket series every 6h (2026-09-08).
+    global_best: dict[str, float] = {}
+    for pm in polys:
+        p_years = year_tokens(pm["question"])
+        for ev in events:
+            text = f"{ev['title']} {ev['sub_title'] or ''}"
+            e_years = year_tokens(text) | year_tokens(ev["event_ticker"])
+            if p_years and e_years and not (p_years & e_years):
+                continue
+            sc = title_score(pm["question"], ev["title"], ev["sub_title"] or "")
+            if sc >= event_min and sc > global_best.get(ev["event_ticker"], 0.0):
+                global_best[ev["event_ticker"]] = sc
+    fetch_allowed = {et for et, _ in sorted(global_best.items(), key=lambda t: -t[1])[:max_fetches]}
+    counts["fetch_capped"] = max(0, len(global_best) - len(fetch_allowed))
 
     for pm in polys:
         p_years = year_tokens(pm["question"])
@@ -220,7 +239,7 @@ def refresh_pairs(
         for _, ev in ev_scored[:events_per_market]:
             et = ev["event_ticker"]
             if et not in fetched:
-                if fetch_event_markets is None:
+                if fetch_event_markets is None or et not in fetch_allowed:
                     continue
                 try:
                     fetched[et] = fetch_event_markets(et)

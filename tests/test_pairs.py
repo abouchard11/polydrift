@@ -278,3 +278,57 @@ def test_unquoted_hex_condition_id_is_rejected_loudly(tmp_path):
         load_decisions(str(f))
     f.write_text("approve:\n  - ticker: T\n    condition_id: \"0xb8b5ba72\"\n")
     assert load_decisions(str(f))["approve"][0]["condition_id"] == "0xb8b5ba72"
+
+
+def test_tracked_tickers_exclude_weak_unreviewed_candidates(tmp_path):
+    """2026-09-08: tracking every candidate grew 51 -> 516 tickers in 3 days
+    and tripped Kalshi's burst limit every cycle."""
+    st = Storage(tmp_path / "t.db")
+    st.upsert_poly_markets([PolyMarket(condition_id="c1", gamma_id="1", question="Q?", slug="s",
+        description="", end_date="2027-01-01T00:00:00Z", yes_token_id="t", no_token_id="n",
+        active=True, closed=False)], 1)
+    for tk, sc, conflict, status in (("K-STRONG", 0.6, False, "needs_review"),
+                                     ("K-WEAK", 0.31, False, "needs_review"),
+                                     ("K-CONFLICT", 0.9, True, "needs_review"),
+                                     ("K-APPROVED", 0.4, False, "approved"),
+                                     ("K-AUTO", 0.8, False, "auto_ok")):
+        st.upsert_kalshi_markets([KalshiMarket(ticker=tk, event_ticker="E", series_ticker="S",
+            title="T", yes_sub_title="", rules_primary="", rules_secondary="",
+            close_time="2027-01-01T00:00:00Z", market_type="binary", status="active")], 1)
+        st.upsert_pair("c1", tk, score=sc, dates_ok=True, days_apart=0, wording_conflict=conflict,
+                       wording_note="", proposed_status=status, now_ts=1)
+    assert sorted(st.pair_tickers()) == ["K-APPROVED", "K-AUTO", "K-STRONG"]
+    assert len(st.pair_tickers(min_review_score=None)) == 5
+    st.close()
+
+
+def test_stale_events_are_pruned_after_a_sweep(tmp_path):
+    st = Storage(tmp_path / "t.db")
+    st.upsert_kalshi_events([{"event_ticker": "OLD", "title": "old"}], now_ts=100)
+    st.upsert_kalshi_events([{"event_ticker": "NEW", "title": "new"}], now_ts=200)
+    assert st.prune_stale_events(seen_after_ts=200) == 1
+    rows = [r[0] for r in st.conn.execute("SELECT event_ticker FROM kalshi_events")]
+    assert rows == ["NEW"]
+    st.close()
+
+
+def test_sweep_fetch_budget_goes_to_the_strongest_events(tmp_path):
+    from polydrift.config import deep_merge
+    st = Storage(tmp_path / "t.db")
+    st.upsert_poly_markets([PolyMarket(condition_id="c1", gamma_id="1",
+        question="Will Spain win the UEFA EURO 2028?", slug="s", description="",
+        end_date="2028-07-15T00:00:00Z", yes_token_id="t", no_token_id="n", active=True, closed=False)], 1)
+    st.upsert_kalshi_events([
+        {"event_ticker": "STRONG", "title": "Will Spain win the 2028 UEFA Euros?", "sub_title": ""},
+        {"event_ticker": "WEAK", "title": "Euro 2028 top scorer", "sub_title": "Spain"},
+    ], now_ts=1)
+    calls = []
+    def fetch(et):
+        calls.append(et)
+        return {"event_ticker": et, "title": "x"}, []
+    cfg = deep_merge(DEFAULTS, {"pairs": {"max_event_fetches_per_sweep": 1,
+                                          "decisions_file": str(tmp_path / "none.yaml")}})
+    counts = refresh_pairs(st, cfg, now_ts=2, fetch_event_markets=fetch)
+    assert calls == ["STRONG"]
+    assert counts["fetch_capped"] == 1
+    st.close()

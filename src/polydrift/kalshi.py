@@ -109,10 +109,16 @@ class KalshiClient:
         markets = [m for m in (event.get("markets") or []) if not is_combo(str(m.get("ticker", "")))]
         return event, markets
 
-    def markets_by_tickers(self, tickers: Sequence[str], chunk: int = 50) -> Iterator[dict[str, Any]]:
-        """Cheap per-cycle price refresh for a known ticker set."""
+    def markets_by_tickers(self, tickers: Sequence[str], chunk: int = 50,
+                           chunk_pause_s: float = 1.0) -> Iterator[dict[str, Any]]:
+        """Cheap per-cycle price refresh for a known ticker set. Consecutive
+        chunks are spaced out: /markets?tickers= has a tighter burst limit than
+        the global throttle assumes (429s on 11 back-to-back calls, 2026-09-08)."""
+        import time as _time
         tickers = [t for t in tickers if t]
         for i in range(0, len(tickers), chunk):
+            if i and chunk_pause_s > 0:
+                _time.sleep(chunk_pause_s)
             payload = self.http.get_json(f"{KALSHI_BASE}/markets",
                                          params={"tickers": ",".join(tickers[i:i + chunk])})
             for m in (payload.get("markets", []) if isinstance(payload, dict) else []):

@@ -276,13 +276,32 @@ class Storage:
             )
         return len(rows)
 
-    def pair_tickers(self, include_rejected: bool = False) -> list[str]:
-        """Kalshi tickers worth snapshotting every cycle: anything in the
-        registry that a human hasn't rejected."""
-        sql = "SELECT DISTINCT ticker FROM kalshi_pairs"
-        if not include_rejected:
-            sql += " WHERE status != 'rejected'"
-        return [r[0] for r in self.conn.execute(sql).fetchall()]
+    def pair_tickers(self, include_rejected: bool = False,
+                     min_review_score: float | None = 0.5) -> list[str]:
+        """Kalshi tickers worth snapshotting every cycle.
+
+        Usable pairs always. needs_review pairs only when they clear a score
+        floor and carry no wording conflict — i.e. a human might plausibly
+        approve them. Live lesson 2026-09-08: tracking every candidate grew the
+        set from 51 to 516 tickers in three days and tripped Kalshi's burst
+        limit on every cycle."""
+        if include_rejected:
+            sql, args = "SELECT DISTINCT ticker FROM kalshi_pairs", ()
+        elif min_review_score is None:
+            sql, args = "SELECT DISTINCT ticker FROM kalshi_pairs WHERE status != 'rejected'", ()
+        else:
+            sql = """SELECT DISTINCT ticker FROM kalshi_pairs
+                     WHERE status IN ('auto_ok', 'approved')
+                        OR (status = 'needs_review' AND score >= ? AND wording_conflict = 0)"""
+            args = (float(min_review_score),)
+        return [r[0] for r in self.conn.execute(sql, args).fetchall()]
+
+    def prune_stale_events(self, seen_after_ts: int) -> int:
+        """Drop index entries not refreshed by the latest sweep. Kalshi closes
+        thousands of events a week; without this the index only grows
+        (23,186 scanned vs 12,171 open on 2026-09-08)."""
+        cur = self.conn.execute("DELETE FROM kalshi_events WHERE last_seen_ts < ?", (seen_after_ts,))
+        return cur.rowcount
 
     # ---------- pair registry ----------
 
