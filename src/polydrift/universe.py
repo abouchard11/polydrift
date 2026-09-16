@@ -16,6 +16,7 @@ import datetime as dt
 import re
 from typing import Any, Iterable, Mapping, Sequence
 
+from .games import is_game_market
 from .models import PolyMarket
 
 
@@ -76,4 +77,30 @@ def select_poly_universe(
         kept.append((liquidity or 0.0, market))
 
     kept.sort(key=lambda pair: -pair[0])
-    return [market for _, market in kept[:max_markets]]
+    general = [market for _, market in kept[:max_markets]]
+
+    # Game (moneyline) markets get their own slice. They are the only markets
+    # whose prices reliably MOVE inside a 1h-24h window; the general top-N is
+    # dominated by long-dated markets that sit still for weeks (day-7 read,
+    # 2026-09-16). Lower liquidity floor: a $10k MLB book is plenty for a
+    # measurement, and the pair on the other venue is deterministic.
+    max_games = int(uni.get("max_games", 0) or 0)
+    if max_games <= 0:
+        return general
+    game_floor = float(uni.get("game_min_liquidity_usd", 10_000) or 0)
+    chosen = {m.condition_id for m in general}
+    games: list[tuple[float, PolyMarket]] = []
+    for market, liquidity, price in candidates:
+        if market.condition_id in chosen or market.closed:
+            continue
+        if not is_game_market(market.slug, market.question):
+            continue
+        if require_future and is_zombie(market, now):
+            continue
+        if (liquidity or 0.0) < game_floor:
+            continue
+        if price is not None and not (lo <= price <= hi):
+            continue
+        games.append((liquidity or 0.0, market))
+    games.sort(key=lambda pair: -pair[0])
+    return general + [market for _, market in games[:max_games]]

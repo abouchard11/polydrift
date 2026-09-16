@@ -135,6 +135,23 @@ class PolymarketClient:
             source="gamma",
         )
 
+    def midpoints(self, token_ids: Sequence[str], chunk: int = 100) -> dict[str, float]:
+        """Live order-book midpoints, batched. Gamma's list endpoint serves a
+        cached outcomePrices that can lag a fast-moving game by minutes
+        (observed 0.615 vs a 0.895 book on a live MLB game, 2026-09-16); a
+        convergence study cannot be built on a lagging price."""
+        out: dict[str, float] = {}
+        ids = [t for t in token_ids if t]
+        for i in range(0, len(ids), chunk):
+            payload = self.http.post_json(f"{CLOB_BASE}/midpoints",
+                                          [{"token_id": t} for t in ids[i:i + chunk]])
+            if isinstance(payload, dict):
+                for tok, mid in payload.items():
+                    val = _as_float(mid)
+                    if val is not None:
+                        out[str(tok)] = val
+        return out
+
     def price_history(self, condition_id: str, token_id: str,
                       interval: str = "max", fidelity: int = 60) -> list[PolySnapshot]:
         """One-time backfill of a market's price series from the CLOB."""

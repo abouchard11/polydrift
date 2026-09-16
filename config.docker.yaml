@@ -15,6 +15,8 @@ universe:
   exclude_question_patterns:
   - (?i)jesus christ
   - (?i)second coming
+  max_games: 30
+  game_min_liquidity_usd: 10000
 kalshi:
   enabled: true
   max_markets: 400

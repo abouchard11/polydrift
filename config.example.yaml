@@ -11,6 +11,8 @@ universe:
   exclude_question_patterns:
   - (?i)jesus christ
   - (?i)\balien\b
+  max_games: 30
+  game_min_liquidity_usd: 10000
 kalshi:
   enabled: true
   max_markets: 400

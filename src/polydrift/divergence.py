@@ -61,6 +61,7 @@ def value_after(series: Series, t: int, max_ahead_s: int) -> float | None:
 class Bucket:
     n: int = 0
     hits: int = 0
+    moved: int = 0        # windows where the Polymarket price changed at all
     gross: float = 0.0
     net: float = 0.0
     abs_div: float = 0.0
@@ -69,6 +70,7 @@ class Bucket:
     def add(self, gross: float, net: float, abs_div: float) -> None:
         self.n += 1
         self.hits += int(gross > 0)
+        self.moved += int(gross != 0.0)
         self.gross += gross
         self.net += net
         self.abs_div += abs_div
@@ -77,6 +79,12 @@ class Bucket:
     @property
     def hit_rate(self) -> float | None:
         return self.hits / self.n if self.n else None
+
+    @property
+    def moved_rate(self) -> float | None:
+        """Share of windows with any price change. Near zero means the panel
+        is dead and every other number in this bucket is fee noise."""
+        return self.moved / self.n if self.n else None
 
     @property
     def mean_net(self) -> float | None:

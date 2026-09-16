@@ -119,11 +119,11 @@ def _cmd_report(args, cfg, storage: Storage) -> None:
     for h in horizons:
         r = evaluate(storage, cfg, horizon_s=int(h))
         print(f"\n  horizon {int(h) // 3600}h   pairs={r.pairs_evaluated}  timestamps={r.timestamps_evaluated}")
-        print(f"    {'provider':22} {'n':>5}  {'hit':>7}  {'gross':>7}  {'net':>7}  {'|div|':>7}  {'t':>5}")
+        print(f"    {'provider':22} {'n':>5}  {'moved':>7}  {'hit':>7}  {'gross':>7}  {'net':>7}  {'|div|':>7}  {'t':>5}")
         for name, b in r.providers.items():
             t = f"{b.t_stat:5.1f}" if b.t_stat is not None else "    -"
-            print(f"    {name:22} {b.n:>5}  {_fmt(b.hit_rate, pct=True)}  {_fmt(b.mean_gross)}  "
-                  f"{_fmt(b.mean_net)}  {_fmt(b.mean_abs_div)}  {t}")
+            print(f"    {name:22} {b.n:>5}  {_fmt(b.moved_rate, pct=True)}  {_fmt(b.hit_rate, pct=True)}  "
+                  f"{_fmt(b.mean_gross)}  {_fmt(b.mean_net)}  {_fmt(b.mean_abs_div)}  {t}")
     print("\n  A provider is only interesting if its net beats BOTH baselines with t >= 2 "
           "on a horizon you could actually trade.")
 
@@ -199,7 +199,7 @@ def main(argv: list[str] | None = None) -> int:
                    FROM poly_markets m
                    LEFT JOIN poly_snapshots s ON s.condition_id = m.condition_id
                         AND s.id = (SELECT id FROM poly_snapshots
-                                    WHERE condition_id = m.condition_id AND source='gamma'
+                                    WHERE condition_id = m.condition_id AND source IN ('gamma','clob_mid')
                                     ORDER BY ts DESC LIMIT 1)
                    ORDER BY s.liquidity_usd DESC NULLS LAST LIMIT ?""",
                 (args.limit,),

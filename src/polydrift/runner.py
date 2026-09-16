@@ -7,8 +7,10 @@ import time
 from typing import Any, Mapping
 
 from .divergence import evaluate
+from .games import refresh_game_pairs
 from .http import Http
 from .kalshi import KalshiClient
+from .models import PolySnapshot
 from .pairs import apply_decisions, load_decisions, refresh_due, refresh_pairs
 from .polymarket import PolymarketClient
 from .storage import Storage
@@ -60,11 +62,34 @@ def poll_once(cfg: Mapping[str, Any], storage: Storage, http: Http) -> PollResul
 
         poly_markets = storage.upsert_poly_markets(selected, now_ts)
 
-        snapshots = []
+        # Per-cycle price = live CLOB midpoint where available; Gamma's cached
+        # outcomePrices only as a fallback. Liquidity/volume still come from Gamma.
+        # Paired markets that rotated out of the universe stay on the list until
+        # they end, so a pair never goes one-sided.
+        selected_ids = {m.condition_id for m in selected}
+        sticky = [r for r in storage.paired_poly_markets() if r["condition_id"] not in selected_ids]
+        mids: dict[str, float] = {}
+        try:
+            mids = poly.midpoints([m.yes_token_id for m in selected if m.yes_token_id]
+                                  + [r["yes_token_id"] for r in sticky])
+        except Exception as exc:
+            log.warning("clob midpoints failed, falling back to gamma prices: %s", exc)
+        snapshots = [
+            PolySnapshot(r["condition_id"], now_ts, mids[r["yes_token_id"]],
+                         round(1.0 - mids[r["yes_token_id"]], 6), None, None, "clob_mid")
+            for r in sticky if r["yes_token_id"] in mids
+        ]
+        if sticky:
+            log.info("polymarket: %d paired markets kept beyond the universe", len(snapshots))
         for market in selected:
             snap = poly.parse_snapshot(raw_by_condition[market.condition_id], now_ts)
-            if snap is not None:
-                snapshots.append(snap)
+            if snap is None:
+                continue
+            mid = mids.get(market.yes_token_id or "")
+            if mid is not None:
+                snap = PolySnapshot(snap.condition_id, snap.ts, mid, round(1.0 - mid, 6),
+                                    snap.liquidity_usd, snap.volume_usd, "clob_mid")
+            snapshots.append(snap)
         poly_snaps = storage.insert_poly_snapshots(snapshots)
 
         # One-time historical backfill per market, so a fresh deploy is not
@@ -99,6 +124,11 @@ def poll_once(cfg: Mapping[str, Any], storage: Storage, http: Http) -> PollResul
                 log.info("kalshi: indexed %d open events, pruned %d stale", n_events, pruned)
                 pairs_counts = refresh_pairs(storage, cfg, now_ts,
                                              fetch_event_markets=kalshi.event_markets)
+
+            # Game markets pair deterministically from identifiers; new games
+            # appear daily, so this runs every cycle (it only fetches legs for
+            # markets that have no pair yet).
+            refresh_game_pairs(storage, cfg, now_ts, fetch_event_markets=kalshi.event_markets)
 
             # Version-controlled decisions land on every cycle, not just on the
             # 6-hourly sweep, so a deploy that ships a new decisions.yaml takes
@@ -153,8 +183,9 @@ def log_report(cfg: Mapping[str, Any], storage: Storage) -> None:
                 hit = f"{b.hit_rate:.3f}" if b.hit_rate is not None else "-"
                 net = f"{b.mean_net:+.4f}" if b.mean_net is not None else "-"
                 gross = f"{b.mean_gross:+.4f}" if b.mean_gross is not None else "-"
-                log.info("REPORT h=%dh provider=%s n=%d hit=%s gross=%s net=%s t=%s pairs=%d ts=%d",
-                         int(h) // 3600, name, b.n, hit, gross, net, t,
+                moved = f"{b.moved_rate:.3f}" if b.moved_rate is not None else "-"
+                log.info("REPORT h=%dh provider=%s n=%d moved=%s hit=%s gross=%s net=%s t=%s pairs=%d ts=%d",
+                         int(h) // 3600, name, b.n, moved, hit, gross, net, t,
                          r.pairs_evaluated, r.timestamps_evaluated)
     except Exception:  # a report bug must never stop the recorder
         log.exception("report failed")

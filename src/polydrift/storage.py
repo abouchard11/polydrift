@@ -9,6 +9,7 @@ be re-run without duplicating history.
 """
 from __future__ import annotations
 
+import datetime as dt
 import logging
 import sqlite3
 from contextlib import contextmanager
@@ -290,11 +291,29 @@ class Storage:
         elif min_review_score is None:
             sql, args = "SELECT DISTINCT ticker FROM kalshi_pairs WHERE status != 'rejected'", ()
         else:
-            sql = """SELECT DISTINCT ticker FROM kalshi_pairs
-                     WHERE status IN ('auto_ok', 'approved')
-                        OR (status = 'needs_review' AND score >= ? AND wording_conflict = 0)"""
-            args = (float(min_review_score),)
+            # Games settle nightly; once the Polymarket side has ended there
+            # is nothing left to pair against, so stop spending calls on it.
+            sql = """SELECT DISTINCT p.ticker FROM kalshi_pairs p
+                     JOIN poly_markets m ON m.condition_id = p.condition_id
+                     WHERE (p.status IN ('auto_ok', 'approved')
+                            OR (p.status = 'needs_review' AND p.score >= ? AND p.wording_conflict = 0))
+                       AND (m.end_date IS NULL OR m.end_date >= ?)"""
+            cutoff = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            args = (float(min_review_score), cutoff)
         return [r[0] for r in self.conn.execute(sql, args).fetchall()]
+
+    def paired_poly_markets(self) -> list[sqlite3.Row]:
+        """Polymarket markets with a usable pair that have not ended. Kept on
+        the snapshot list even after they rotate out of the liquidity top-N:
+        a game that leaves the universe mid-game (liquidity is pulled as it
+        ends) must still be recorded, or its last price is a stale one and the
+        Kalshi side keeps moving alone (2026-09-16)."""
+        cutoff = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return self.conn.execute(
+            """SELECT DISTINCT m.condition_id, m.yes_token_id
+               FROM poly_markets m JOIN kalshi_pairs p ON p.condition_id = m.condition_id
+               WHERE p.status IN ('auto_ok', 'approved') AND m.yes_token_id IS NOT NULL
+                 AND (m.end_date IS NULL OR m.end_date >= ?)""", (cutoff,)).fetchall()
 
     def prune_stale_events(self, seen_after_ts: int) -> int:
         """Drop index entries not refreshed by the latest sweep. Kalshi closes

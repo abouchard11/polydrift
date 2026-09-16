@@ -26,6 +26,8 @@ DEFAULTS: dict[str, Any] = {
         "require_end_date_future": True,
         "max_days_to_resolution": 400,
         "price_band": [0.05, 0.95],
+        "max_games": 30,                   # moneyline game markets, on top of max_markets
+        "game_min_liquidity_usd": 10_000.0,
         "exclude_question_patterns": [],
     },
     "kalshi": {

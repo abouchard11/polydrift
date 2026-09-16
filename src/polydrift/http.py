@@ -84,5 +84,25 @@ class Http:
         assert last_exc is not None
         raise last_exc
 
+    def post_json(self, url: str, payload: Any) -> Any:
+        last_exc: Exception | None = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                self._throttle()
+                resp = self.session.post(url, json=payload, timeout=self.timeout_s)
+                if resp.status_code in RETRYABLE_STATUS or resp.status_code >= 400:
+                    raise HttpError(resp.status_code, resp.url, resp.text)
+                return resp.json()
+            except (requests.RequestException, HttpError, ValueError) as exc:
+                last_exc = exc
+                if attempt >= self.max_retries:
+                    break
+                sleep_s = self.backoff_base_s * (2 ** attempt) + random.uniform(0, 0.3)
+                log.warning("POST %s failed (%s), retry %d/%d in %.1fs",
+                            url, exc, attempt + 1, self.max_retries, sleep_s)
+                time.sleep(sleep_s)
+        assert last_exc is not None
+        raise last_exc
+
     def close(self) -> None:
         self.session.close()
