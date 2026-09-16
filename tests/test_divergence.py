@@ -94,3 +94,26 @@ def test_only_usable_pairs_are_evaluated(tmp_path):
     r = evaluate(st, DEFAULTS, horizon_s=H)
     assert r.pairs_evaluated == 0 and r.timestamps_evaluated == 0
     st.close()
+
+
+def test_log_report_never_raises_and_emits_lines(tmp_path, caplog):
+    """The recorder reports on itself in the logs; a report bug must never
+    stop the poll loop."""
+    import logging
+    from polydrift.runner import log_report
+    st = Storage(tmp_path / "t.db"); _pair(st)
+    with caplog.at_level(logging.INFO, logger="polydrift.runner"):
+        log_report(DEFAULTS, st)
+    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("REPORT")]
+    assert any("usable_pairs=1" in l for l in lines)
+    assert sum(1 for l in lines if "provider=kalshi" in l) == len(DEFAULTS["divergence"]["horizons_s"])
+    st.close()
+
+
+def test_tokens_are_memoised():
+    from polydrift.matching import _tokens_cached, tokens
+    _tokens_cached.cache_clear()
+    for _ in range(50):
+        tokens("Will Spain win the UEFA EURO 2028?")
+    info = _tokens_cached.cache_info()
+    assert info.misses == 1 and info.hits == 49

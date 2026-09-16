@@ -17,6 +17,7 @@ DEFAULTS: dict[str, Any] = {
     "poll": {
         "interval_s": 300,
         "backfill_on_first_seen": True,
+        "report_every_cycles": 72,     # log the divergence report every 6h at 300s
     },
     "universe": {
         "min_liquidity_usd": 25_000.0,

@@ -10,6 +10,7 @@ that.
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 from typing import Iterable
 
 # Expansions applied to both sides before tokenising. Keys are matched as
@@ -63,7 +64,8 @@ def normalise(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def tokens(text: str) -> set[str]:
+@lru_cache(maxsize=131072)
+def _tokens_cached(text: str) -> frozenset[str]:
     out: set[str] = set()
     for raw in _TOKEN_RX.findall(normalise(text)):
         tok = raw.strip(".")
@@ -73,7 +75,14 @@ def tokens(text: str) -> set[str]:
         if len(tok) > 4 and tok.endswith("s") and not tok.endswith("ss"):
             tok = tok[:-1]
         out.add(tok)
-    return out
+    return frozenset(out)
+
+
+def tokens(text: str) -> set[str]:
+    """Memoised: the sweep scores ~13k event titles against ~40 questions, so
+    every title is tokenised ~40 times. Uncached this took 30 minutes and left
+    a 30-minute hole in the Polymarket series every 6h (2026-09-15)."""
+    return set(_tokens_cached(text or ""))
 
 
 def jaccard(a: Iterable[str], b: Iterable[str]) -> float:

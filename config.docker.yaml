@@ -2,6 +2,7 @@ db_path: /data/polydrift.db
 poll:
   interval_s: 300
   backfill_on_first_seen: true
+  report_every_cycles: 72
 universe:
   min_liquidity_usd: 25000
   max_markets: 40

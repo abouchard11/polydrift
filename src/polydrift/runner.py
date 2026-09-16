@@ -6,6 +6,7 @@ import logging
 import time
 from typing import Any, Mapping
 
+from .divergence import evaluate
 from .http import Http
 from .kalshi import KalshiClient
 from .pairs import apply_decisions, load_decisions, refresh_due, refresh_pairs
@@ -136,12 +137,40 @@ def poll_once(cfg: Mapping[str, Any], storage: Storage, http: Http) -> PollResul
     )
 
 
+def log_report(cfg: Mapping[str, Any], storage: Storage) -> None:
+    """Emit the divergence report to the logs. The Railway volume is only
+    reachable over SSH, which a project token cannot set up, so the recorder
+    reports on itself instead and a check-in only needs `railway logs`."""
+    try:
+        st = storage.status()
+        log.info("REPORT usable_pairs=%s needs_review=%s poly_points=%s kalshi_points=%s",
+                 st.get("pairs_usable"), st.get("pairs_review"),
+                 st.get("poly_snapshots"), st.get("kalshi_snapshots"))
+        for h in cfg.get("divergence", {}).get("horizons_s", [3600]):
+            r = evaluate(storage, cfg, horizon_s=int(h))
+            for name, b in r.providers.items():
+                t = f"{b.t_stat:.2f}" if b.t_stat is not None else "-"
+                hit = f"{b.hit_rate:.3f}" if b.hit_rate is not None else "-"
+                net = f"{b.mean_net:+.4f}" if b.mean_net is not None else "-"
+                gross = f"{b.mean_gross:+.4f}" if b.mean_gross is not None else "-"
+                log.info("REPORT h=%dh provider=%s n=%d hit=%s gross=%s net=%s t=%s pairs=%d ts=%d",
+                         int(h) // 3600, name, b.n, hit, gross, net, t,
+                         r.pairs_evaluated, r.timestamps_evaluated)
+    except Exception:  # a report bug must never stop the recorder
+        log.exception("report failed")
+
+
 def poll_loop(cfg: Mapping[str, Any], storage: Storage, http: Http) -> None:
     interval = int(cfg.get("poll", {}).get("interval_s", 300))
+    report_every = int(cfg.get("poll", {}).get("report_every_cycles", 72))   # 6h at 300s
     log.info("poll loop starting, interval=%ds", interval)
+    cycle = 0
     while True:
         started = time.time()
         result = poll_once(cfg, storage, http)
         log.info("cycle done: %s", dict(result))
+        cycle += 1
+        if cycle == 1 or (report_every > 0 and cycle % report_every == 0):
+            log_report(cfg, storage)
         elapsed = time.time() - started
         time.sleep(max(5.0, interval - elapsed))

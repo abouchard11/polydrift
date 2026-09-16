@@ -110,7 +110,7 @@ class KalshiClient:
         return event, markets
 
     def markets_by_tickers(self, tickers: Sequence[str], chunk: int = 50,
-                           chunk_pause_s: float = 1.0) -> Iterator[dict[str, Any]]:
+                           chunk_pause_s: float = 2.0) -> Iterator[dict[str, Any]]:
         """Cheap per-cycle price refresh for a known ticker set. Consecutive
         chunks are spaced out: /markets?tickers= has a tighter burst limit than
         the global throttle assumes (429s on 11 back-to-back calls, 2026-09-08)."""
