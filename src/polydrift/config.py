@@ -55,6 +55,7 @@ DEFAULTS: dict[str, Any] = {
         "max_ahead_s": 1800,
         "fee_rate": 0.05,                  # conservative general-category taker rate
         "reversion_lookback_s": 6 * 3600,
+        "non_overlapping": True,           # one observation per pair per horizon
     },
     "http": {
         "timeout_s": 20,

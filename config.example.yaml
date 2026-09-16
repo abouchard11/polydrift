@@ -33,3 +33,14 @@ pairs:
   max_candidates_per_market: 3
   max_event_fetches_per_sweep: 150
   refresh_interval_s: 21600
+divergence:
+  signal_threshold_pts: 0.03
+  horizons_s:
+  - 3600
+  - 21600
+  - 86400
+  max_stale_s: 1800
+  max_ahead_s: 1800
+  fee_rate: 0.05
+  reversion_lookback_s: 21600
+  non_overlapping: true

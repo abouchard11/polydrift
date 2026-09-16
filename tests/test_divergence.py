@@ -117,3 +117,21 @@ def test_tokens_are_memoised():
         tokens("Will Spain win the UEFA EURO 2028?")
     info = _tokens_cached.cache_info()
     assert info.misses == 1 and info.hits == 49
+
+
+def test_windows_do_not_overlap_by_default(tmp_path):
+    """One repricing event must count once per horizon, not once per 5-minute
+    timestamp whose window happens to contain it."""
+    from polydrift.config import deep_merge
+    st = Storage(tmp_path / "t.db"); _pair(st)
+    # Polymarket: flat at 0.50 then jumps to 0.58 at t=1000+H, flat after.
+    st.insert_poly_snapshots([PolySnapshot("c1", 1000 + i * 300, 0.50 if i * 300 < H else 0.58, 0.5, None, None, "gamma")
+                              for i in range(0, 2 * H // 300 + 1)])
+    # Kalshi: 0.60 every 5 minutes for 2 hours -> 24 timestamps
+    st.insert_kalshi_snapshots([KalshiSnapshot("K1", 1000 + i * 300, 0.59, 0.61, 0.60, 1, 1, 0)
+                                for i in range(0, 2 * H // 300)])
+    overlapping = evaluate(st, deep_merge(DEFAULTS, {"divergence": {"non_overlapping": False}}), horizon_s=H)
+    independent = evaluate(st, DEFAULTS, horizon_s=H)
+    assert overlapping.providers["kalshi"].n > independent.providers["kalshi"].n
+    assert independent.providers["kalshi"].n <= 2          # ~2 hours / 1h horizon
+    st.close()

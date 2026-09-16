@@ -130,6 +130,11 @@ def evaluate(storage: Storage, cfg: Mapping[str, Any], horizon_s: int) -> Result
     max_ahead = int(dcfg.get("max_ahead_s", 1800))
     fee_rate = float(dcfg.get("fee_rate", 0.05))
     lookback_s = int(dcfg.get("reversion_lookback_s", 6 * 3600))
+    # Overlapping windows are not independent observations: one repricing
+    # event lands in every 5-minute timestamp whose forward window contains
+    # it, inflating n by ~horizon/cadence and making t-stats fiction. Sample
+    # timestamps at least one horizon apart per pair (day-7 lesson, 2026-09-16).
+    non_overlapping = bool(dcfg.get("non_overlapping", True))
 
     providers: dict[str, Bucket] = {
         "kalshi": Bucket(),
@@ -156,12 +161,16 @@ def evaluate(storage: Storage, cfg: Mapping[str, Any], horizon_s: int) -> Result
 
         # deterministic pseudo-random sign per timestamp so the baseline is
         # reproducible without seeding global state
+        next_allowed = -1
         for t, k_mid in zip(*kal):
+            if non_overlapping and t < next_allowed:
+                continue
             p_now = value_at(poly, t, max_stale)
             p_fwd = value_after(poly, t + horizon_s, max_ahead)
             if p_now is None or p_fwd is None:
                 continue
             n_ts += 1
+            next_allowed = t + horizon_s
             move = p_fwd - p_now
             fee = _round_trip(p_now, p_fwd, fee_rate)
 
