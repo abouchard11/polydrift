@@ -192,6 +192,9 @@ def log_report(cfg: Mapping[str, Any], storage: Storage) -> None:
 
 
 def poll_loop(cfg: Mapping[str, Any], storage: Storage, http: Http) -> None:
+    from polydrift.web import start_if_port_set
+
+    start_if_port_set(storage, dict(cfg))
     interval = int(cfg.get("poll", {}).get("interval_s", 300))
     report_every = int(cfg.get("poll", {}).get("report_every_cycles", 72))   # 6h at 300s
     log.info("poll loop starting, interval=%ds", interval)
