@@ -5,6 +5,7 @@ Runs in a daemon thread beside the poll loop — never blocks, never writes.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import threading
@@ -41,13 +42,23 @@ def _report_payload(storage: Storage, cfg: dict[str, Any]) -> dict[str, Any]:
 
 
 def make_handler(storage: Storage, cfg: dict[str, Any]) -> type:
+    db_path = str(storage.db_path)
+
+    def fresh() -> Storage:
+        # Per-request connection: SQLite objects are thread-bound; the poll
+        # loop's connection lives in another thread. Opening per request
+        # (schema idempotent, WAL-safe concurrent readers) avoids that.
+        return Storage(db_path)
+
     class H(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
             try:
                 if self.path.startswith("/status"):
-                    payload = storage.status()
+                    with contextlib.closing(fresh()) as s:
+                        payload = s.status()
                 elif self.path.startswith("/report"):
-                    payload = _report_payload(storage, cfg)
+                    with contextlib.closing(fresh()) as s:
+                        payload = _report_payload(s, cfg)
                 elif self.path in ("/", "/health"):
                     payload = {"ok": True, "service": "polydrift", "read_only": True}
                 else:
