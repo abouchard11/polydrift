@@ -1,4 +1,3 @@
-import datetime as dt
 
 from polydrift.config import DEFAULTS
 from polydrift.models import KalshiMarket, PolyMarket
@@ -331,4 +330,77 @@ def test_sweep_fetch_budget_goes_to_the_strongest_events(tmp_path):
     counts = refresh_pairs(st, cfg, now_ts=2, fetch_event_markets=fetch)
     assert calls == ["STRONG"]
     assert counts["fetch_capped"] == 1
+    st.close()
+
+
+# --- Semantic gate (2026-09-26): the Senate-control catch --------------------
+
+SENATE_PM_CONTROL = (
+    "This market will resolve according to the party that wins control of the "
+    "United States Senate in the 2026 midterm election. A party wins control "
+    "if it wins a majority of the chamber's voting seats. All regular and "
+    "special Senate elections in November 2026 are included."
+)
+SENATE_K_DIRECT = (
+    "If the Democratic Party has won control of the U.S. Senate in 2026, then "
+    "the market resolves to Yes. Otherwise, victory will be determined by the "
+    "party identification of the President pro tempore of the Senate."
+)
+SENATE_K_SEATCOUNT = (
+    "This market resolves to Yes if Democrats hold 51 or more Senate seats "
+    "after the 2026 midterms. How many Senate seats will Democrats hold?"
+)
+
+
+def _seed_senate_pair(tmp_path, kalshi_rules, poly_end, kalshi_close):
+    st = Storage(tmp_path / "t.db")
+    st.upsert_poly_markets([PolyMarket(
+        condition_id="c-sen", gamma_id="1",
+        question="Which party will win the U.S. Senate?",
+        slug="s", description=SENATE_PM_CONTROL, end_date=poly_end,
+        yes_token_id="t", no_token_id="n", active=True, closed=False)], 1000)
+    st.upsert_kalshi_events([
+        {"event_ticker": "CONTROLS-2026", "series_ticker": "CONTROLS",
+         "title": "Which party will win the U.S. Senate?", "sub_title": ""}], 1000)
+
+    def fetch(et):
+        return ({"event_ticker": et, "series_ticker": "CONTROLS",
+                 "title": "Which party will win the U.S. Senate?"},
+                [{"ticker": "CONTROLS-2026-D", "event_ticker": et,
+                  "yes_sub_title": "Democratic Party", "rules_primary": kalshi_rules,
+                  "rules_secondary": "", "close_time": kalshi_close,
+                  "market_type": "binary", "status": "active"}])
+
+    cfg = dict(DEFAULTS)
+    cfg["pairs"] = dict(DEFAULTS["pairs"], decisions_file=str(tmp_path / "none.yaml"))
+    counts = refresh_pairs(st, cfg, now_ts=1000, fetch_event_markets=fetch)
+    rows = st.list_pairs()
+    return st, counts, rows
+
+
+def test_direct_control_vs_direct_control_can_auto_approve(tmp_path):
+    st, _counts, rows = _seed_senate_pair(
+        tmp_path, SENATE_K_DIRECT, "2026-11-03T23:59:00Z", "2026-11-03T23:59:00Z")
+    assert rows and rows[0]["status"] == "auto_ok"
+    assert not rows[0]["semantic_conflict"]
+    st.close()
+
+
+def test_seat_count_synthetic_vs_direct_control_is_blocked(tmp_path):
+    """REGRESSION. The calendar's warning, live-confirmed on the Senate pair:
+    a seat-count synthetic and a direct control contract are different bets
+    even when the titles read identically. Must never auto-approve."""
+    st, _counts, rows = _seed_senate_pair(
+        tmp_path, SENATE_K_SEATCOUNT, "2026-11-03T23:59:00Z", "2026-11-03T23:59:00Z")
+    assert rows and rows[0]["status"] == "needs_review"
+    assert rows[0]["semantic_conflict"] == 1
+    assert "granularity" in (rows[0]["semantic_note"] or "")
+    st.close()
+
+
+def test_far_apart_settlement_horizon_is_flagged(tmp_path):
+    st, _counts, rows = _seed_senate_pair(
+        tmp_path, SENATE_K_DIRECT, "2027-01-05T04:59:00Z", "2027-02-01T15:00:00Z")
+    assert rows and rows[0]["semantic_conflict"] == 1
+    assert "horizon" in (rows[0]["semantic_note"] or "")
     st.close()

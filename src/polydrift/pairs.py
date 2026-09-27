@@ -26,10 +26,11 @@ import datetime as dt
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from .kalshi import KalshiClient
 from .matching import title_score, year_tokens
+from .radar import semantic_mismatch
 from .storage import Storage
 
 log = logging.getLogger(__name__)
@@ -265,11 +266,22 @@ def refresh_pairs(
                                      f"{km.rules_primary} {km.rules_secondary}")
             if not check.conflict:
                 check = title_outcome_conflict(pm["question"], f"{km.title} {km.yes_sub_title}")
-            proposed = ("auto_ok" if (score >= auto_score and ok_dates and not check.conflict)
+            # Semantic gate (2026-09-26): resolution source / settlement
+            # horizon / granularity differences. The Senate-control catch:
+            # Kalshi's direct control contract vs a Polymarket seat-count
+            # synthetic look identical in the title and are different bets.
+            sem = semantic_mismatch(
+                f"{pm['question']} {pm['description'] or ''}",
+                f"{km.title} {km.yes_sub_title} {km.rules_primary} {km.rules_secondary}",
+                pm["end_date"], km.close_time,
+            )
+            proposed = ("auto_ok" if (score >= auto_score and ok_dates
+                                      and not check.conflict and not sem.mismatch)
                         else "needs_review")
             final = storage.upsert_pair(
                 pm["condition_id"], km.ticker, score=score, dates_ok=ok_dates,
                 days_apart=days, wording_conflict=check.conflict, wording_note=check.note,
+                semantic_conflict=sem.mismatch, semantic_note=sem.note,
                 proposed_status=proposed, now_ts=now_ts,
             )
             counts["candidates"] += 1
