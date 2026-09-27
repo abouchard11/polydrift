@@ -38,6 +38,24 @@ def _report_payload(storage: Storage, cfg: dict[str, Any]) -> dict[str, Any]:
             "timestamps_evaluated": r.timestamps_evaluated,
             "providers": providers,
         })
+    # event-window radar: read-only status (a scan WRITES the alert ledger,
+    # so it runs in the poll loop, not on a web request)
+    try:
+        import datetime as dt
+        from polydrift.events import mode_for, next_event
+        from polydrift.graph import graph_digest
+        now = dt.datetime.now(dt.timezone.utc)
+        active = mode_for(now)
+        nxt = next_event(now)
+        out["radar"] = {
+            "mode": active.mode,
+            "event": active.event.key if active.event else None,
+            "next_event": {"key": nxt.key, "anchor_utc": nxt.anchor_utc.isoformat(),
+                           "priority": nxt.priority} if nxt else None,
+            "graph": graph_digest(storage),
+        }
+    except Exception as exc:  # noqa: BLE001 - radar status must not 500 the report
+        out["radar"] = {"error": str(exc)}
     return out
 
 

@@ -31,7 +31,28 @@ polydrift pairs --show 41               # both venues' rules side by side
 polydrift pairs --approve 41            # same bet -> usable
 polydrift pairs --reject 31             # different bet -> never snapshotted again
 polydrift report                        # divergence -> convergence, net of fees
+polydrift tminus                        # Q4 event calendar + current T-minus mode
+polydrift radar                         # event-window divergence scan (tiered alerts)
+polydrift radar --json                  # machine-readable
+polydrift graph                         # midterm event graph: pre-map + lead/lag per edge
 ```
+
+## The event-window radar (Q4)
+
+Tiered alerts from the 90-day dislocation calendar: same-side divergence at
+**2.0c = alert**, **2.5c + positive fee-adjusted score = execution-candidate**,
+and a separate **semantic-mismatch flag** (resolution source / settlement
+horizon / strike / rounding / granularity) that caps a pair at `alert` — a
+seat-count synthetic against a direct control contract is compensation, not
+mispricing (see `docs/senate-gap-2026-09-26.md` for the live classification).
+Alerts append to `data/event-alerts.jsonl` and appear in the report logs and
+web `/report`. The recorder loop is untouched and every alert-path failure is
+contained: an alert crash can never stop the poll loop.
+
+T-minus modes tighten the loop around the calendar's dates: baseline, t-24h
+(rule-text snapshots), t-60m (60s cadence), high (30s cadence: BLS/BEA
+T-5m->T+15m around 8:30am ET releases, FOMC 1:55-2:10pm + 2:28-3:15pm ET,
+election night poll-close to national-call convergence).
 
 ## The review gate
 
@@ -92,6 +113,39 @@ overlap, not with Kalshi's catalog.
 some container volumes raise `disk I/O error` on `PRAGMA journal_mode=WAL`,
 which would take the recorder down at start. `storage.py` degrades to a
 rollback journal and logs a warning.
+
+**Polymarket US gateway omits `volume` from list payloads.** The public
+OpenAPI declares `volume` / `volume24hr` on the Market object, but the live
+`GET /v1/markets` response carries neither (verified 2026-09-26, every page
+size) — a client that ranks locally on `volume` silently selects nothing,
+the same failure mode as the Kalshi schema change above. The ranking lives
+server-side: `orderBy=volume&orderDirection=desc` works, and the
+`volumeNumMin` filter is honoured. Per-market volume / open interest arrive
+on the BBO endpoint (`sharesTraded` / `openInterest`). Covered by
+`tests/test_pmus.py`.
+
+## The third venue: Polymarket US (keyless)
+
+PMUS (CFTC-regulated, QCX LLC) exposes an anonymous public REST API at
+`gateway.polymarket.us` — catalogue, full aggregated books, BBO, settlement,
+price history — with a published limit of 20 requests/second/IP. The market
+WebSocket requires a key and is not used; snapshot ingestion is REST-only
+and the client never attaches credentials.
+
+`src/polydrift/pmus.py` is the adapter. Discovery pulls the open markets in
+the server's volume ranking (3 pages every 6h); the per-cycle cost is one
+BBO call per tracked slug (~40), so the recorder stays far under the public
+limit. PMUS snapshots join the same 5-minute cycle into `pmus_snapshots`,
+and the pair registry gains PMUS–Kalshi and PMUS–PM-global candidates
+(`pmus_pairs`): moneyline games pair deterministically from identifiers
+(PMUS slug `aec-nfl-lac-ten-2025-11-02` shares its core with the PM-global
+slug and the Kalshi `KXNFLGAME` event), everything else goes through the
+same score + date + wording review gate as the PM-global↔Kalshi registry.
+
+PMUS fee facts live in `fees.py` with their effective date: taker theta
+**0.0695** and maker **−0.0125** (a credit), effective 2026-09-25 — the
+taker value supersedes the July 2026 CFTC filing's 0.06, and the live
+gateway confirms it (`feeCoefficient: 0.0695` on open markets).
 
 ## Storage
 

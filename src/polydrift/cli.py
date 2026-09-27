@@ -128,6 +128,78 @@ def _cmd_report(args, cfg, storage: Storage) -> None:
           "on a horizon you could actually trade.")
 
 
+def _cmd_radar(args, cfg, storage: Storage) -> None:
+    """Run one event-window divergence scan right now (read-only)."""
+    import time as _time
+    from .events import mode_for, next_event
+    from .radar import scan, scan_digest
+
+    now = dt.datetime.now(dt.timezone.utc)
+    active = mode_for(now)
+    nxt = next_event(now)
+    print(f"t-minus mode    {active.mode}"
+          + (f"  (event {active.event.key})" if active.event else ""))
+    print(f"next event      {nxt.key if nxt else '-'}"
+          + (f"  {nxt.anchor_utc:%Y-%m-%d %H:%MZ}  priority {nxt.priority}" if nxt else ""))
+    print()
+    alerts = scan(storage, cfg, int(_time.time()), active.mode)
+    if not alerts:
+        print("no pairs over the alert threshold right now — ledger unchanged")
+        return
+    if args.json:
+        print(json.dumps({"mode": active.mode, "digest": scan_digest(alerts),
+                          "alerts": alerts}, indent=1))
+        return
+    print(f"  {'tier':20} {'gap':>7} {'score':>7}  {'sem':4}  {'leader':10}  pair")
+    for a in alerts:
+        print(f"  {a['tier']:20} {a['gap_cents']:+7.2f} {a['candidate_score_cents']:+7.2f}  "
+              f"{'YES' if a['semantic_flag'] else '-':4}  {a['leader'] or '-':10}  {a['ticker']}  "
+              f"{a['question'][:48]}")
+        if a["semantic_flag"]:
+            print(f"      semantic: {a['semantic_note']}")
+    print(f"\n  {scan_digest(alerts)}   ledger: {cfg.get('radar', {}).get('alerts_file', 'data/event-alerts.jsonl')}")
+
+
+def _cmd_graph(args, cfg, storage: Storage) -> None:
+    """Midterm event graph: pre-mapped series + per-node cross-venue lead/lag."""
+    from .graph import graph_report
+
+    rep = graph_report(storage, lookback_s=args.lookback_hours * 3600)
+    print("hierarchy: state race -> seat count -> chamber control -> balance of power\n")
+    for key, node in rep["nodes"].items():
+        k = ", ".join(node["kalshi"]) or "-"
+        p = ", ".join(node["poly"]) or "-"
+        cv = node["cross_venue"]
+        lead = cv.get("leader")
+        if lead:
+            ll = f"{lead} leads by {cv['lag_s']}s (corr {cv['corr']})"
+        elif "note" in cv:
+            ll = f"({cv['note']})"
+        else:
+            ll = "(no callable lag)"
+        print(f"  [{node['level']:15}] {node['title']}")
+        print(f"      kalshi: {k[:100]}")
+        print(f"      poly:   {p[:100]}")
+        print(f"      lead/lag: {ll}\n")
+    for e in rep["edges"]:
+        print(f"  edge {e['child']} -> {e['parent']}: {e['note']}")
+
+
+def _cmd_tminus(args, cfg) -> None:
+    """Show the T-minus calendar and the mode each window is in right now."""
+    from .events import EVENT_CALENDAR, mode_for
+    now = dt.datetime.now(dt.timezone.utc)
+    active = mode_for(now)
+    print(f"now: {now:%Y-%m-%d %H:%MZ}   active mode: {active.mode}"
+          + (f" ({active.event.key})" if active.event else ""))
+    print()
+    for ev in EVENT_CALENDAR:
+        print(f"  {ev.anchor_utc:%Y-%m-%d %H:%MZ}  {ev.priority:4}  {ev.name}")
+        for a, b in ev.high_windows_utc:
+            print(f"      high-freq window {a:%m-%d %H:%MZ} -> {b:%m-%d %H:%MZ}")
+        print(f"      series: {', '.join(ev.series)}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="polydrift", description=__doc__)
     parser.add_argument("-c", "--config", default=None, help="path to config.yaml")
@@ -155,6 +227,15 @@ def main(argv: list[str] | None = None) -> int:
     p_rep = sub.add_parser("report", help="does divergence predict convergence, net of fees?")
     p_rep.add_argument("--horizon", type=int, action="append", metavar="SECONDS",
                        help="evaluate this horizon (repeatable); default from config")
+
+    p_radar = sub.add_parser("radar", help="event-window divergence scan (tiered alerts, read-only)")
+    p_radar.add_argument("--json", action="store_true", help="machine-readable output")
+
+    p_graph = sub.add_parser("graph", help="midterm event graph: pre-map + lead/lag per edge")
+    p_graph.add_argument("--lookback-hours", type=int, default=24 * 7,
+                         help="history window for lead/lag (default 168h)")
+
+    sub.add_parser("tminus", help="show the T-minus event calendar and current mode")
 
     args = parser.parse_args(argv)
     _setup_logging(args.verbose)
@@ -192,6 +273,15 @@ def main(argv: list[str] | None = None) -> int:
 
         elif args.command == "report":
             _cmd_report(args, cfg, storage)
+
+        elif args.command == "radar":
+            _cmd_radar(args, cfg, storage)
+
+        elif args.command == "graph":
+            _cmd_graph(args, cfg, storage)
+
+        elif args.command == "tminus":
+            _cmd_tminus(args, cfg)
 
         elif args.command == "list-markets":
             rows = storage.conn.execute(
