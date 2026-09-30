@@ -57,6 +57,28 @@ DEFAULTS: dict[str, Any] = {
         "reversion_lookback_s": 6 * 3600,
         "non_overlapping": True,           # one observation per pair per horizon
     },
+    "radar": {
+        "enabled": True,
+        "alert_cents": 2.0,                # calendar: directional alert band
+        "execution_cents": 2.5,            # calendar: execution-candidate band
+        "max_stale_s": 900,                # quotes older than this cannot alert
+        "alerts_file": "data/event-alerts.jsonl",
+        "cooldown_s": 1800,                # same (pair, tier) re-alerts at most
+        "high_cooldown_s": 300,            # ...half-hourly, 5-minutely in high mode
+        "default_slippage_cents": 0.5,     # per venue when no book is known
+        "adverse_selection_cents": 0.3,
+        "semantic_reserve_cents": 1.0,     # charged only on semantic-mismatch pairs
+        "poly_category": "politics",
+        "horizon_tol_days": 21,            # settlement dates further apart = mismatch
+    },
+    "events": {                            # capture-plan knobs per T-minus mode
+        "high_interval_s": 30,
+        "high_freshness_s": 120,
+        "t60m_interval_s": 60,
+        "t60m_freshness_s": 300,
+        "t24h_freshness_s": 900,
+        "baseline_freshness_s": 1800,
+    },
     "http": {
         "timeout_s": 20,
         "max_retries": 4,

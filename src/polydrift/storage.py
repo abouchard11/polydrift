@@ -124,6 +124,14 @@ CREATE TABLE IF NOT EXISTS poll_runs (
 );
 """
 
+# Columns added after first deploy; applied idempotently in _migrate() so an
+# existing Railway volume upgrades in place instead of failing the CREATEs
+# above (which are IF NOT EXISTS and silently no-op on an old table).
+MIGRATIONS: tuple[tuple[str, str], ...] = (
+    ("kalshi_pairs", "ALTER TABLE kalshi_pairs ADD COLUMN semantic_conflict INTEGER NOT NULL DEFAULT 0"),
+    ("kalshi_pairs", "ALTER TABLE kalshi_pairs ADD COLUMN semantic_note TEXT"),
+)
+
 
 class Storage:
     def __init__(self, db_path: str | Path) -> None:
@@ -133,6 +141,18 @@ class Storage:
         self.conn.row_factory = sqlite3.Row
         self.journal_mode = self._set_journal_mode()
         self.conn.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Add columns introduced after the first deploy. try/except per
+        statement: a duplicate column error means it already ran; anything
+        else (e.g. a locked volume) must not take the recorder down."""
+        for _table, stmt in MIGRATIONS:
+            try:
+                self.conn.execute(stmt)
+            except sqlite3.OperationalError as exc:
+                if "duplicate column" not in str(exc).lower():
+                    log.warning("migration failed: %s (%s)", stmt, exc)
 
     def _set_journal_mode(self) -> str:
         """WAL is faster, but it needs shared memory the filesystem may not
@@ -326,7 +346,8 @@ class Storage:
 
     def upsert_pair(self, condition_id: str, ticker: str, *, score: float, dates_ok: bool,
                     days_apart: int | None, wording_conflict: bool, wording_note: str,
-                    proposed_status: str, now_ts: int) -> str:
+                    proposed_status: str, now_ts: int,
+                    semantic_conflict: bool = False, semantic_note: str = "") -> str:
         """Insert or refresh a candidate. Human decisions (approved / rejected)
         SURVIVE a refresh of the same pair — a re-match must never silently
         flip a reviewed pair back. Returns the resulting status."""
@@ -341,16 +362,20 @@ class Storage:
         self.conn.execute(
             """INSERT INTO kalshi_pairs
                (condition_id, ticker, score, dates_ok, days_apart, wording_conflict,
-                wording_note, status, created_ts, updated_ts)
-               VALUES (?,?,?,?,?,?,?,?,?,?)
+                wording_note, semantic_conflict, semantic_note,
+                status, created_ts, updated_ts)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(condition_id, ticker) DO UPDATE SET
                  score=excluded.score, dates_ok=excluded.dates_ok,
                  days_apart=excluded.days_apart,
                  wording_conflict=excluded.wording_conflict,
                  wording_note=excluded.wording_note,
+                 semantic_conflict=excluded.semantic_conflict,
+                 semantic_note=excluded.semantic_note,
                  status=?, updated_ts=excluded.updated_ts""",
             (condition_id, ticker, score, int(dates_ok), days_apart, int(wording_conflict),
-             wording_note, status, now_ts, now_ts, status),
+             wording_note, int(semantic_conflict), semantic_note,
+             status, now_ts, now_ts, status),
         )
         return status
 
@@ -391,6 +416,48 @@ class Storage:
             "INSERT INTO meta (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             (key, value),
         )
+
+    # ---------- radar snapshot queries ----------
+
+    def latest_kalshi(self, ticker: str, max_stale_s: int = 900,
+                      now_ts: int | None = None) -> sqlite3.Row | None:
+        """Most recent Kalshi snapshot for a ticker, if fresher than the bound."""
+        row = self.conn.execute(
+            "SELECT * FROM kalshi_snapshots WHERE ticker=? ORDER BY ts DESC LIMIT 1",
+            (ticker,)).fetchone()
+        now_ts = now_ts if now_ts is not None else int(dt.datetime.now(dt.timezone.utc).timestamp())
+        if row is None or int(row["ts"]) < now_ts - max_stale_s:
+            return None
+        return row
+
+    def latest_poly(self, condition_id: str, max_stale_s: int = 900,
+                    now_ts: int | None = None) -> sqlite3.Row | None:
+        """Most recent live Polymarket snapshot (book midpoint or gamma, never
+        the historical backfill source)."""
+        row = self.conn.execute(
+            """SELECT * FROM poly_snapshots
+               WHERE condition_id=? AND source IN ('gamma', 'clob_mid')
+               ORDER BY ts DESC LIMIT 1""",
+            (condition_id,)).fetchone()
+        now_ts = now_ts if now_ts is not None else int(dt.datetime.now(dt.timezone.utc).timestamp())
+        if row is None or int(row["ts"]) < now_ts - max_stale_s:
+            return None
+        return row
+
+    def recent_kalshi_series(self, ticker: str, since_ts: int) -> list[tuple[int, float]]:
+        rows = self.conn.execute(
+            """SELECT ts, COALESCE((yes_bid + yes_ask) / 2.0, last_price) AS mid
+               FROM kalshi_snapshots WHERE ticker=? AND ts>=? ORDER BY ts""",
+            (ticker, since_ts)).fetchall()
+        return [(int(r["ts"]), float(r["mid"])) for r in rows if r["mid"] is not None]
+
+    def recent_poly_series(self, condition_id: str, since_ts: int) -> list[tuple[int, float]]:
+        rows = self.conn.execute(
+            """SELECT ts, yes_price FROM poly_snapshots
+               WHERE condition_id=? AND ts>=? AND source IN ('gamma', 'clob_mid')
+               ORDER BY ts""",
+            (condition_id, since_ts)).fetchall()
+        return [(int(r["ts"]), float(r["yes_price"])) for r in rows if r["yes_price"] is not None]
 
     # ---------- run bookkeeping / status ----------
 

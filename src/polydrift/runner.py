@@ -167,6 +167,49 @@ def poll_once(cfg: Mapping[str, Any], storage: Storage, http: Http) -> PollResul
     )
 
 
+def _effective_interval(cfg: Mapping[str, Any], configured_s: int) -> int:
+    """Poll interval for this cycle, tightened by the T-minus capture plan.
+    Fail-safe: any error in the calendar/mode code falls back to the
+    configured interval — the event radar must never slow or stop the recorder."""
+    try:
+        from .events import capture_plan, mode_for
+        plan = capture_plan(mode_for(dt.datetime.now(dt.timezone.utc)).mode,
+                            cfg.get("events", {}))
+        if plan.interval_s is not None:
+            return min(configured_s, int(plan.interval_s))
+    except Exception:  # noqa: BLE001
+        log.exception("t-minus mode resolution failed; using configured interval")
+    return configured_s
+
+
+def _radar_cycle(cfg: Mapping[str, Any], storage: Storage) -> None:
+    """Event-window divergence radar: tiered alerts into the digest + JSONL.
+    Read-only, and fail-safe by contract: an alert-path crash must never
+    stop the poll loop, so the whole cycle is one best-effort try."""
+    try:
+        if not cfg.get("radar", {}).get("enabled", True):
+            return
+        from .events import mode_for
+        from .radar import scan, scan_digest
+        now = dt.datetime.now(dt.timezone.utc)
+        active = mode_for(now)
+        alerts = scan(storage, cfg, int(now.timestamp()), active.mode)
+        if active.mode != "baseline":
+            ev = active.event.key if active.event else "-"
+            log.info("T-MINUS mode=%s event=%s", active.mode, ev)
+        if alerts:
+            log.info("RADAR mode=%s digest=%s", active.mode, scan_digest(alerts))
+            for a in alerts:
+                log.info(
+                    "RADAR alert tier=%s pair=%s gap=%+.2fc score=%+.2fc semantic=%s "
+                    "dims=%s leader=%s",
+                    a["tier"], a["ticker"], a["gap_cents"], a["candidate_score_cents"],
+                    a["semantic_flag"], ",".join(a["semantic_dimensions"]) or "-",
+                    a["leader"] or "-")
+    except Exception:  # noqa: BLE001
+        log.exception("radar cycle failed (recorder unaffected)")
+
+
 def log_report(cfg: Mapping[str, Any], storage: Storage) -> None:
     """Emit the divergence report to the logs. The Railway volume is only
     reachable over SSH, which a project token cannot set up, so the recorder
@@ -189,6 +232,18 @@ def log_report(cfg: Mapping[str, Any], storage: Storage) -> None:
                          r.pairs_evaluated, r.timestamps_evaluated)
     except Exception:  # a report bug must never stop the recorder
         log.exception("report failed")
+    # event-window radar digest: current T-minus mode + graph coverage
+    try:
+        from .events import mode_for, next_event
+        from .graph import graph_digest
+        now = dt.datetime.now(dt.timezone.utc)
+        active = mode_for(now)
+        nxt = next_event(now)
+        log.info("RADAR mode=%s next_event=%s",
+                 active.mode, nxt.key if nxt else "-")
+        log.info("RADAR graph=%s", graph_digest(storage))
+    except Exception:  # noqa: BLE001
+        log.exception("radar report failed")
 
 
 def poll_loop(cfg: Mapping[str, Any], storage: Storage, http: Http) -> None:
@@ -197,14 +252,15 @@ def poll_loop(cfg: Mapping[str, Any], storage: Storage, http: Http) -> None:
     start_if_port_set(storage, dict(cfg))
     interval = int(cfg.get("poll", {}).get("interval_s", 300))
     report_every = int(cfg.get("poll", {}).get("report_every_cycles", 72))   # 6h at 300s
-    log.info("poll loop starting, interval=%ds", interval)
+    log.info("poll loop starting, interval=%ds (t-minus modes may tighten it)", interval)
     cycle = 0
     while True:
         started = time.time()
         result = poll_once(cfg, storage, http)
         log.info("cycle done: %s", dict(result))
+        _radar_cycle(cfg, storage)
         cycle += 1
         if cycle == 1 or (report_every > 0 and cycle % report_every == 0):
             log_report(cfg, storage)
         elapsed = time.time() - started
-        time.sleep(max(5.0, interval - elapsed))
+        time.sleep(max(5.0, _effective_interval(cfg, interval) - elapsed))
