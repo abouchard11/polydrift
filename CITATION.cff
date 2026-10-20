@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "polydrift"
+abstract: >-
+  Read-only measurement harness for Polymarket and Kalshi. It records prices over time
+  to answer one question: does a forecast that diverges from the market price predict
+  subsequent convergence, net of fees? It never trades and holds no keys.
+authors:
+  - family-names: "Bouchard"
+    given-names: "Alex"
+    email: "alex@midnightdev.dev"
+    affiliation: "MidnightDev"
+    website: "https://midnightdev.dev"
+    orcid: "https://orcid.org/0009-0003-0911-9681"
+type: software
+repository-code: "https://github.com/abouchard11/polydrift"
+url: "https://github.com/abouchard11/polydrift"
+license: Apache-2.0
+date-released: 2026-09-05
+keywords:
+  - "prediction-markets"
+  - "polymarket"
+  - "kalshi"
+  - "market-data"
+  - "quant"
+  - "forecasting"
