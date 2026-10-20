@@ -16,6 +16,12 @@ type: software
 repository-code: "https://github.com/abouchard11/polydrift"
 url: "https://github.com/abouchard11/polydrift"
 license: Apache-2.0
+version: "0.1.0"
+doi: "10.5281/zenodo.23502961"
+identifiers:
+  - type: doi
+    value: "10.5281/zenodo.23502961"
+    description: "Concept DOI: resolves to the latest archived release on Zenodo"
 date-released: 2026-09-05
 keywords:
   - "prediction-markets"
