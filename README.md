@@ -1,5 +1,7 @@
 # polydrift
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23502961.svg)](https://doi.org/10.5281/zenodo.23502961)
+
 Read-only measurement harness for Polymarket and Kalshi. It records prices over
 time and is built to answer one question: **does a forecast that diverges from
 the market price predict subsequent convergence, net of fees?**
